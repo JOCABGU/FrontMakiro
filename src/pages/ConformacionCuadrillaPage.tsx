@@ -119,11 +119,8 @@ const CUADRILLA_LIST_TABS: { id: CuadrillaListTab; label: string }[] = [
 ]
 
 const MENU_NAME_CONFORMACION_CUADRILLAS = 'tsm_conformacioncuadrillas'
-const MENU_NAME_LISTA_AGENDA = 'tsm_listaagenda'
-const LEGACY_MENU_ID_VER_DATOS_TECNICO = 8
-const LEGACY_MENU_ID_GRUPO = 9
-const LEGACY_MENU_ID_ASIGNAR_TECNICO_GRUPO = 10
-const LEGACY_MENU_ID_CONFORMACION_CUADRILLAS = 62
+const LEGACY_MENU_ID_CONFORMACION_CUADRILLAS = 1
+const LEGACY_MENU_ID_CONFORMACION_CUADRILLAS_OLD = 62
 const ESTADO_OPTIONS = ['ACTIVO', 'AUSENTE'] as const
 const HABILIDAD_OPTIONS = ['RECLAMOS', 'INSTALACION'] as const
 const CONFIRMAR_MARCADO_MODAL_TEXT =
@@ -829,12 +826,6 @@ const toVisualLabel = (value: string | undefined | null, emptyLabel: string): st
   return normalized ? normalized : emptyLabel
 }
 
-const buildRowSummary = (row: ConformacionCuadrillaRecord): string => {
-  const grupoLabel = toVisualLabel(row.grupo, '-')
-  const eliminadoLabel = isRowEliminado(row) ? 'Sí' : 'No'
-  return `Grupo: ${grupoLabel} | Eliminado: ${eliminadoLabel}`
-}
-
 const buildConfirmadasVersionKey = (row: ConformacionCuadrillaRecord): string | null => {
   const fecha = toISODate(row.fecha)
   const sucursal = normalizeLookupKey(String(row.sucursal ?? ''))
@@ -898,15 +889,12 @@ const ConformacionCuadrillaPage = () => {
     }
     return legacyMenuIds.some((idMenu) => menuIds.includes(idMenu))
   }
-  const canViewCuadrillas =
-    hasMenuPermission(MENU_NAME_CONFORMACION_CUADRILLAS, [LEGACY_MENU_ID_CONFORMACION_CUADRILLAS]) ||
-    hasMenuPermission(MENU_NAME_LISTA_AGENDA, [2])
-  const canAsignarTecnicoGrupo =
-    hasMenuPermission(MENU_NAME_CONFORMACION_CUADRILLAS, [LEGACY_MENU_ID_ASIGNAR_TECNICO_GRUPO, LEGACY_MENU_ID_GRUPO]) ||
-    hasMenuPermission(MENU_NAME_LISTA_AGENDA)
-  const canVerDatosTecnico =
-    hasMenuPermission(MENU_NAME_CONFORMACION_CUADRILLAS, [LEGACY_MENU_ID_VER_DATOS_TECNICO]) ||
-    hasMenuPermission(MENU_NAME_LISTA_AGENDA)
+  const canViewCuadrillas = hasMenuPermission(MENU_NAME_CONFORMACION_CUADRILLAS, [
+    LEGACY_MENU_ID_CONFORMACION_CUADRILLAS,
+    LEGACY_MENU_ID_CONFORMACION_CUADRILLAS_OLD,
+  ])
+  const canAsignarTecnicoGrupo = canViewCuadrillas
+  const canVerDatosTecnico = canViewCuadrillas
   const [modalOpen, setModalOpen] = useState(false)
   const [modalMode, setModalMode] = useState<CuadrillaModalMode>('view')
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -1205,24 +1193,9 @@ const ConformacionCuadrillaPage = () => {
     const direct = readRecordString(row, RECORD_TECNICO_LABEL_KEYS, row.tecnico ?? '')
     return toVisualLabel(direct, 'Sin tecnico')
   }
-  const resolveDigitadorListLabel = (row: ConformacionCuadrillaRecord): string => {
-    const direct = readRecordString(row, RECORD_DIGITADOR_LABEL_KEYS, row.digitador ?? '')
-    return toVisualLabel(direct, 'Sin digitador')
-  }
-  const resolveSupervisorListLabel = (row: ConformacionCuadrillaRecord): string => {
-    const direct = readRecordString(row, RECORD_SUPERVISOR_LABEL_KEYS, row.supervisorACargo ?? '')
-    return toVisualLabel(direct, 'Sin supervisor')
-  }
-  const resolveActividadListLabel = (row: ConformacionCuadrillaRecord): string => {
-    const direct = readRecordString(row, RECORD_ACTIVIDAD_KEYS, row.actividad ?? '')
-    return toVisualLabel(direct, 'Sin actividad')
-  }
-  const buildRowOperatorSummaryText = (row: ConformacionCuadrillaRecord): string => {
-    const tecnicoLabel = resolveTecnicoListLabel(row)
-    const actividadLabel = resolveActividadListLabel(row)
-    const digitadorLabel = resolveDigitadorListLabel(row)
-    const supervisorLabel = resolveSupervisorListLabel(row)
-    return `Tecnico: ${tecnicoLabel} | Actividad: ${actividadLabel} | Digitador: ${digitadorLabel} | Supervisor: ${supervisorLabel}`
+  const resolveHabilidadListLabel = (row: ConformacionCuadrillaRecord): string => {
+    const direct = readRecordString(row, ['habilidad', 'Habilidad'], row.habilidad ?? '')
+    return toVisualLabel(direct, 'Sin habilidad')
   }
   const selectedFechaFiltro = toISODate(filterFecha) || todayValue
   const listQuery = useQuery({
@@ -1501,7 +1474,20 @@ const ConformacionCuadrillaPage = () => {
 
   const handleToggleConfirmRow = (row: ConformacionCuadrillaRecord) => {
     const key = getRecordSelectionKey(row)
-    setSelectedConfirmKeys((current) => (current.includes(key) ? current.filter((item) => item !== key) : [...current, key]))
+    setSelectedConfirmKeys((current) => {
+      const willSelect = !current.includes(key)
+      setSessionDraftByKey((drafts) => {
+        const baseRecord = drafts[key] ?? row
+        return {
+          ...drafts,
+          [key]: normalizeListRecord({
+            ...baseRecord,
+            estado: willSelect ? 'ACTIVO' : 'AUSENTE',
+          }),
+        }
+      })
+      return willSelect ? [...current, key] : current.filter((item) => item !== key)
+    })
   }
 
   const isRowDetailLoading = (row: ConformacionCuadrillaRecord): boolean => {
@@ -1512,89 +1498,57 @@ const ConformacionCuadrillaPage = () => {
 
   const columns: Column<ConformacionCuadrillaRecord>[] = [
     {
-      key: 'fechaRegistro',
-      header: 'Registro',
-      render: (row) => {
-        const registroLabel = formatDateTime(row.fechaRegistro) || formatDate(row.fecha) || '-'
-        return (
-          <div className="flex flex-col gap-0.5">
-            <span>{registroLabel}</span>
-            <span className="text-[11px] text-slate-500">{buildRowSummary(row)}</span>
-            <span className="text-[11px] text-slate-500">{buildRowOperatorSummaryText(row)}</span>
-          </div>
-        )
-      },
-    },
-    {
-      key: 'fecha',
-      header: 'Fecha',
-      render: (row) => formatDate(row.fecha) || 'Sin fecha',
-    },
-    
-    {
-      key: 'estado',
-      header: 'Estado',
-      render: (row) => {
-        const estadoLabel = row.confirmada ? 'Confirmada' : resolveEstadoForList(row)
-        const isActivo = estadoLabel === 'ACTIVO'
-        const isConfirmado = estadoLabel === 'Confirmada'
-        return (
-          <span
-            className={
-              'badge ' +
-              (isConfirmado
-                ? 'border-sky-300 bg-sky-50 text-sky-700'
-                : isActivo
-                  ? 'border-emerald-300 bg-emerald-50 text-emerald-700'
-                  : 'border-slate-300 bg-slate-100 text-slate-600')
-            }
-          >
-            {estadoLabel}
-          </span>
-        )
-      },
-    },
-    { key: 'tecnico', header: 'Tecnico', render: (row) => resolveTecnicoListLabel(row) },
-    { key: 'auxiliar', header: 'Auxiliar', render: (row) => toVisualLabel(row.auxiliar, 'Sin auxiliar') },
-    { key: 'digitador', header: 'Digitador', render: (row) => resolveDigitadorListLabel(row) },
-    { key: 'grupo', header: 'Grupo', render: (row) => `Grupo ${toVisualLabel(row.grupo, '-')}` },
-    { key: 'vehiculo', header: 'Vehiculo', render: (row) => toVisualLabel(row.vehiculo, 'Sin vehiculo') },
-    
-    {
-      key: 'acciones',
-      header: 'Acciones',
+      key: 'preliminar',
+      header: 'Preliminar',
       render: (row) => {
         const selectionKey = getRecordSelectionKey(row)
         const isSelected = selectedConfirmKeys.includes(selectionKey)
+        const registroLabel = formatDateTime(row.fechaRegistro) || formatDate(row.fecha) || '-'
+        const tecnicoLabel = resolveTecnicoListLabel(row)
+        const auxiliarLabel = toVisualLabel(row.auxiliar, 'Sin auxiliar')
+        const vehiculoLabel = toVisualLabel(row.vehiculo, 'Sin vehiculo')
+        const habilidadLabel = resolveHabilidadListLabel(row)
+        const canToggleActive = canConfirmInActiveTab && canAsignarTecnicoGrupo
+        const activeChecked = canConfirmInActiveTab ? isSelected : resolveEstadoForList(row) === 'ACTIVO'
         const rowDetailLoading = isRowDetailLoading(row)
         const hasRealId = getRecordRealId(row) !== null
         return (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
-              type="button"
-              onClick={() => void handleOpenDetalle(row)}
-              disabled={rowDetailLoading}
-            >
-              {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver local'}
-            </Button>
-            {canConfirmInActiveTab ? (
+          <div className="min-w-[280px] rounded-3xl border border-sky-200 bg-white px-4 py-3 text-slate-900">
+            <div className="flex items-start justify-between gap-2">
+              <p className="text-[11px] uppercase tracking-wide text-slate-500">{registroLabel || 'Sin registro'}</p>
               <Button
-                variant={isSelected ? 'primary' : 'secondary'}
+                variant="secondary"
                 type="button"
-                onClick={() => handleToggleConfirmRow(row)}
-                disabled={!canAsignarTecnicoGrupo}
-                className="min-w-[120px]"
+                onClick={() => void handleOpenDetalle(row)}
+                disabled={rowDetailLoading}
+                className="border-sky-300 text-sky-700"
               >
-                Confirmar
+                {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver local'}
               </Button>
-            ) : null}
+            </div>
+            <p className="mt-2 break-words text-xl font-extrabold leading-tight text-slate-900">{tecnicoLabel}</p>
+            <div className="mt-3 space-y-1 text-sm text-slate-700">
+              <p>Auxiliar: {auxiliarLabel}</p>
+              <p>Vehiculo: {vehiculoLabel}</p>
+              <p>Habilidad: {habilidadLabel}</p>
+            </div>
+            <div className="mt-4 flex items-center justify-end">
+              <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                <span>Activo</span>
+                <input
+                  type="checkbox"
+                  className="h-5 w-5 rounded border-slate-300 text-sky-600 focus:ring-sky-300"
+                  checked={activeChecked}
+                  onChange={() => handleToggleConfirmRow(row)}
+                  disabled={!canToggleActive}
+                />
+              </label>
+            </div>
           </div>
         )
       },
     },
   ]
-
   const refreshCuadrillaListAfterWrite = async (): Promise<boolean> => {
     try {
       await queryClient.invalidateQueries({ queryKey: ['conformacion-cuadrilla-tab-list'] })
@@ -1698,7 +1652,6 @@ const ConformacionCuadrillaPage = () => {
 
   const preConfirmRequiredLabels: Record<string, string> = {
     vehiculo: 'vehiculo',
-    digitador: 'digitador',
     auxiliar: 'auxiliar',
   }
   const formatPreConfirmMissingFields = (fields: string[]): string =>
@@ -1707,10 +1660,6 @@ const ConformacionCuadrillaPage = () => {
   const getPreConfirmMissingFields = (row: EditableRow): string[] => {
     const missing: string[] = []
     if (!String(row.vehiculo ?? '').trim()) missing.push('vehiculo')
-
-    const hasDigitadorId = parseNumber(row.idUsuarioDigitador) !== null
-    const hasDigitadorLabel = String(row.digitador ?? '').trim() !== ''
-    if (!hasDigitadorId && !hasDigitadorLabel) missing.push('digitador')
 
     const hasAuxiliarId = parseNumber(row.idTecnicoAuxiliar) !== null
     const hasAuxiliarLabel = String(row.auxiliar ?? '').trim() !== ''
@@ -2570,21 +2519,11 @@ const ConformacionCuadrillaPage = () => {
 
     const payloadRows = rows.map((row) => buildUpdatePayloadFromRow(row, currentUserId, sucursalActiva))
     const updateItems: PendingUpdateItem[] = []
-    const createRows: ConformacionCuadrillaInput[] = []
-    selectedRows.forEach((record, index) => {
-      const payload = payloadRows[index]
-      if (!payload) return
-      const recordId = getRecordRealId(record)
-      if (recordId !== null) {
-        updateItems.push({
-          id: recordId,
-          payload,
-          target: 'web',
-        })
-        return
-      }
-      createRows.push(payload)
-    })
+    // Al confirmar marcado (boton azul), siempre se crea en BDOrdenes.
+    // No se debe convertir en update web por tener un id de ruta/local.
+    const createRows: ConformacionCuadrillaInput[] = payloadRows.filter(
+      (payload): payload is ConformacionCuadrillaInput => Boolean(payload)
+    )
 
     openConfirmationModal(
       { filas: createRows },
@@ -2609,7 +2548,7 @@ const ConformacionCuadrillaPage = () => {
     return (
       <FormCard title="Conformacion de Cuadrillas" description="No tienes permisos para este modulo.">
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-          Requiere tsm_ConformacionCuadrillas o tsm_ListaAgenda.
+          Requiere tsm_ConformacionCuadrillas.
         </div>
       </FormCard>
     )
@@ -2767,56 +2706,46 @@ const ConformacionCuadrillaPage = () => {
                   const isSelected = selectedConfirmKeys.includes(selectionKey)
                   const rowDetailLoading = isRowDetailLoading(row)
                   const hasRealId = getRecordRealId(row) !== null
-                  const estadoLabel = row.confirmada ? 'Confirmada' : resolveEstadoForList(row)
                   const registroLabel = formatDateTime(row.fechaRegistro) || formatDate(row.fecha)
                   const tecnicoLabel = resolveTecnicoListLabel(row)
                   const auxiliarLabel = toVisualLabel(row.auxiliar, 'Sin auxiliar')
-                  const digitadorLabel = resolveDigitadorListLabel(row)
-                  const supervisorLabel = resolveSupervisorListLabel(row)
-                  const actividadLabel = resolveActividadListLabel(row)
                   const vehiculoLabel = toVisualLabel(row.vehiculo, 'Sin vehiculo')
-                  const observacionLabel = toVisualLabel(row.observacion, 'Sin observacion')
+                  const habilidadLabel = resolveHabilidadListLabel(row)
+                  const canToggleActive = canConfirmInActiveTab && canAsignarTecnicoGrupo
+                  const activeChecked = canConfirmInActiveTab ? isSelected : resolveEstadoForList(row) === 'ACTIVO'
                   return (
-                    <div key={`mobile-card-${selectionKey}-${index}`} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="text-sm font-medium text-slate-600">
-                          <p>{registroLabel || 'Sin registro'}</p>
-                          <p className="text-[11px] text-slate-500">{buildRowSummary(row)}</p>
-                          <p className="text-[11px] text-slate-500">{buildRowOperatorSummaryText(row)}</p>
+                    <div key={`mobile-card-${selectionKey}-${index}`} className="rounded-3xl border border-sky-200 bg-white p-4 text-slate-900 shadow-sm">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[11px] uppercase tracking-wide text-slate-500">{registroLabel || 'Sin registro'}</p>
+                          <p className="mt-2 break-words text-xl font-extrabold leading-tight text-slate-900">{tecnicoLabel}</p>
                         </div>
-                        <div className="flex items-center gap-2">
-                          <span className="badge">{estadoLabel}</span>
-                          <span className="text-sm text-slate-600">{row.sucursal || '-'}</span>
-                        </div>
-                      </div>
-                      <div className="mt-3 border-t border-slate-100 pt-3">
-                        <p className="text-base font-semibold text-slate-900">
-                          {tecnicoLabel} ({auxiliarLabel})
-                        </p>
-                        <p className="mt-1 text-sm text-slate-600">{`Actividad: ${actividadLabel} | Vehiculo: ${vehiculoLabel}`}</p>
-                        <p className="mt-1 text-sm text-slate-600">{`Digitador: ${digitadorLabel}`}</p>
-                        <p className="mt-1 text-sm text-slate-600">{`Supervisor: ${supervisorLabel}`}</p>
-                        <p className="mt-1 text-sm text-slate-600">{`Observacion: ${observacionLabel}`}</p>
-                      </div>
-                      <div className="mt-3 flex items-center justify-end gap-2">
                         <Button
                           variant="secondary"
                           type="button"
                           onClick={() => void handleOpenDetalle(row)}
                           disabled={rowDetailLoading}
+                          className="border-sky-300 text-sky-700"
                         >
                           {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver local'}
                         </Button>
-                        {canConfirmInActiveTab ? (
-                          <Button
-                            variant={isSelected ? 'primary' : 'secondary'}
-                            type="button"
-                            onClick={() => handleToggleConfirmRow(row)}
-                            disabled={!canAsignarTecnicoGrupo}
-                          >
-                            Confirmar
-                          </Button>
-                        ) : null}
+                      </div>
+                      <div className="mt-4 space-y-1 text-sm text-slate-700">
+                        <p>Auxiliar: {auxiliarLabel}</p>
+                        <p>Vehiculo: {vehiculoLabel}</p>
+                        <p>Habilidad: {habilidadLabel}</p>
+                      </div>
+                      <div className="mt-4 flex items-center justify-end">
+                        <label className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                          <span>Activo</span>
+                          <input
+                            type="checkbox"
+                            className="h-5 w-5 rounded border-slate-300 text-sky-600 focus:ring-sky-300"
+                            checked={activeChecked}
+                            onChange={() => handleToggleConfirmRow(row)}
+                            disabled={!canToggleActive}
+                          />
+                        </label>
                       </div>
                     </div>
                   )
@@ -2829,7 +2758,7 @@ const ConformacionCuadrillaPage = () => {
                 data={pagedVisibleData}
                 emptyLabel="No hay registros disponibles."
                 variant="row-block"
-                desktopMinWidthClass="min-w-[1480px]"
+                desktopMinWidthClass="min-w-[980px]"
                 desktopScrollMode="always"
                 desktopHeightClass="h-[58vh]"
                 stickyHeader
@@ -2927,6 +2856,7 @@ const ConformacionCuadrillaPage = () => {
               const issue = rowIssues[index]
               const shouldHighlightRowIssue = Boolean(issue?.hasIssue) && showStrictValidation && !isLocalViewMode
               const isLocalMissingInfo = Boolean(issue?.missingFields?.length) && isLocalViewMode
+              const isCompactEditMode = modalMode === 'edit'
               const rowVehiculoOptions = row.idTecnico ? vehiculoOptionsByTecnico.get(row.idTecnico) ?? [] : []
               const rowVehiculoByValue = new Set(rowVehiculoOptions.map((option) => option.value))
               const isVehiculosLoading =
@@ -2969,44 +2899,57 @@ const ConformacionCuadrillaPage = () => {
 
                   <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-12">
                     <section className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 md:col-span-1 xl:col-span-2">
-                      <div className="grid gap-3">
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Estado</span>
-                          <select
-                            className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
-                            value={row.estado}
-                            onChange={(event) => handleRowChange(index, 'estado', event.target.value)}
+                      {isCompactEditMode ? (
+                        <label className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800">
+                          <span>Activo</span>
+                          <input
+                            type="checkbox"
+                            className="h-5 w-5 rounded border-slate-300 text-sky-600 focus:ring-sky-300"
+                            checked={normalizeEstadoValue(row.estado) === 'ACTIVO'}
+                            onChange={(event) => handleRowChange(index, 'estado', event.target.checked ? 'ACTIVO' : 'AUSENTE')}
                             disabled={isReadOnlyMode}
-                          >
-                            {ESTADO_OPTIONS.map((option) => (
-                              <option key={'estado-' + option} value={option}>
-                                {option}
-                              </option>
-                            ))}
-                          </select>
+                          />
                         </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Actividad</span>
-                          <select
-                            className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
-                            value={row.actividad}
-                            onChange={(event) => handleRowChange(index, 'actividad', event.target.value)}
-                            disabled={actividadesQuery.isLoading || isReadOnlyMode}
-                          >
-                            <option value="">
-                              {actividadesQuery.isLoading ? 'Cargando actividades...' : 'Selecciona actividad'}
-                            </option>
-                            {row.actividad && !actividadByValue.has(row.actividad) ? (
-                              <option value={row.actividad}>{row.actividad}</option>
-                            ) : null}
-                            {actividadOptions.map((option) => (
-                              <option key={'actividad-' + option.value} value={option.value}>
-                                {option.label}
+                      ) : (
+                        <div className="grid gap-3">
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Estado</span>
+                            <select
+                              className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                              value={row.estado}
+                              onChange={(event) => handleRowChange(index, 'estado', event.target.value)}
+                              disabled={isReadOnlyMode}
+                            >
+                              {ESTADO_OPTIONS.map((option) => (
+                                <option key={'estado-' + option} value={option}>
+                                  {option}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Actividad</span>
+                            <select
+                              className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                              value={row.actividad}
+                              onChange={(event) => handleRowChange(index, 'actividad', event.target.value)}
+                              disabled={actividadesQuery.isLoading || isReadOnlyMode}
+                            >
+                              <option value="">
+                                {actividadesQuery.isLoading ? 'Cargando actividades...' : 'Selecciona actividad'}
                               </option>
-                            ))}
-                          </select>
-                        </label>
-                      </div>
+                              {row.actividad && !actividadByValue.has(row.actividad) ? (
+                                <option value={row.actividad}>{row.actividad}</option>
+                              ) : null}
+                              {actividadOptions.map((option) => (
+                                <option key={'actividad-' + option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      )}
                     </section>
 
                     <section className="rounded-2xl border border-slate-200 bg-slate-50 p-3.5 md:col-span-1 xl:col-span-5">
@@ -3036,50 +2979,58 @@ const ConformacionCuadrillaPage = () => {
                             ))}
                           </select>
                         </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Cuenta</span>
-                          <input
-                            className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
-                            value={canVerDatosTecnico ? row.cuentaSf : ''}
-                            placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
-                            readOnly
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Grupo</span>
-                          <select
-                            className="input-base h-9 max-h-72 overflow-y-auto border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
-                            value={rowGrupoSelectValue}
-                            onChange={(event) => handleGrupoSelect(index, event.target.value)}
-                            disabled={gruposQuery.isLoading || isReadOnlyMode}
-                          >
-                            <option value="">{gruposQuery.isLoading ? 'Cargando grupos...' : 'Selecciona grupo'}</option>
-                            {row.grupo && !hasMappedGrupoOption ? <option value={row.grupo}>{row.grupo}</option> : null}
-                            {gruposOptions.map((option) => (
-                              <option key={'grupo-' + option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Salesforce</span>
-                          <input
-                            className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
-                            value={canVerDatosTecnico ? row.salesforce : ''}
-                            placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
-                            readOnly
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Almacen</span>
-                          <input
-                            className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
-                            value={canVerDatosTecnico ? row.almacen : ''}
-                            placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
-                            readOnly
-                          />
-                        </label>
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Cuenta</span>
+                            <input
+                              className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
+                              value={canVerDatosTecnico ? row.cuentaSf : ''}
+                              placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
+                              readOnly
+                            />
+                          </label>
+                        ) : null}
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Grupo</span>
+                            <select
+                              className="input-base h-9 max-h-72 overflow-y-auto border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                              value={rowGrupoSelectValue}
+                              onChange={(event) => handleGrupoSelect(index, event.target.value)}
+                              disabled={gruposQuery.isLoading || isReadOnlyMode}
+                            >
+                              <option value="">{gruposQuery.isLoading ? 'Cargando grupos...' : 'Selecciona grupo'}</option>
+                              {row.grupo && !hasMappedGrupoOption ? <option value={row.grupo}>{row.grupo}</option> : null}
+                              {gruposOptions.map((option) => (
+                                <option key={'grupo-' + option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Salesforce</span>
+                            <input
+                              className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
+                              value={canVerDatosTecnico ? row.salesforce : ''}
+                              placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
+                              readOnly
+                            />
+                          </label>
+                        ) : null}
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Almacen</span>
+                            <input
+                              className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
+                              value={canVerDatosTecnico ? row.almacen : ''}
+                              placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
+                              readOnly
+                            />
+                          </label>
+                        ) : null}
                         <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
                           <span>Habilidad</span>
                           <select
@@ -3096,15 +3047,17 @@ const ConformacionCuadrillaPage = () => {
                             ))}
                           </select>
                         </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>G. digit</span>
-                          <input
-                            className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
-                            value={canVerDatosTecnico ? row.grupoDigitacion : ''}
-                            placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
-                            readOnly
-                          />
-                        </label>
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>G. digit</span>
+                            <input
+                              className="input-base h-9 border-slate-400 bg-slate-100 px-3 text-xs font-semibold text-slate-700 shadow-sm"
+                              value={canVerDatosTecnico ? row.grupoDigitacion : ''}
+                              placeholder={canVerDatosTecnico ? '' : 'Sin permiso (tsm_ConformacionCuadrillas)'}
+                              readOnly
+                            />
+                          </label>
+                        ) : null}
                       </div>
                     </section>
 
@@ -3192,27 +3145,29 @@ const ConformacionCuadrillaPage = () => {
                             ))}
                           </select>
                         </label>
-                        <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-                          <span>Supervisor</span>
-                          <select
-                            className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
-                            value={row.idUsuarioSupervisor}
-                            onChange={(event) => handleSupervisorSelect(index, event.target.value)}
-                            disabled={supervisoresQuery.isLoading || isReadOnlyMode}
-                          >
-                            <option value="">
-                              {supervisoresQuery.isLoading ? 'Cargando supervisores...' : 'Selecciona supervisor'}
-                            </option>
-                            {row.idUsuarioSupervisor && !supervisorById.has(row.idUsuarioSupervisor) ? (
-                              <option value={row.idUsuarioSupervisor}>{row.supervisorACargo || 'Supervisor seleccionado'}</option>
-                            ) : null}
-                            {supervisorOptions.map((option) => (
-                              <option key={'supervisor-' + option.value} value={option.value}>
-                                {option.label}
+                        {!isCompactEditMode ? (
+                          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+                            <span>Supervisor</span>
+                            <select
+                              className="input-base h-9 border-sky-300 bg-sky-50 px-3 text-xs font-semibold shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                              value={row.idUsuarioSupervisor}
+                              onChange={(event) => handleSupervisorSelect(index, event.target.value)}
+                              disabled={supervisoresQuery.isLoading || isReadOnlyMode}
+                            >
+                              <option value="">
+                                {supervisoresQuery.isLoading ? 'Cargando supervisores...' : 'Selecciona supervisor'}
                               </option>
-                            ))}
-                          </select>
-                        </label>
+                              {row.idUsuarioSupervisor && !supervisorById.has(row.idUsuarioSupervisor) ? (
+                                <option value={row.idUsuarioSupervisor}>{row.supervisorACargo || 'Supervisor seleccionado'}</option>
+                              ) : null}
+                              {supervisorOptions.map((option) => (
+                                <option key={'supervisor-' + option.value} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        ) : null}
                         <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
                           <span>Sucursal</span>
                           <input

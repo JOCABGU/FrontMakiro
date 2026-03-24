@@ -16,7 +16,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Ver pendientes',
     to: '/ot/lista',
     routePatterns: ['/ot/lista', '/ot/:id'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
   {
     key: 'crear',
@@ -25,7 +25,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Nueva OT',
     to: '/ot/crear',
     routePatterns: ['/ot/crear'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
   {
     key: 'realizada',
@@ -34,7 +34,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Registrar OT',
     to: '/ot/realizada',
     routePatterns: ['/ot/realizada'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
   {
     key: 'modificar',
@@ -43,7 +43,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Modificar OT',
     to: '/ot/modificar',
     routePatterns: ['/ot/modificar'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
   {
     key: 'modificar-fecha',
@@ -52,7 +52,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Modificar fecha',
     to: '/ot/modificar-fecha',
     routePatterns: ['/ot/modificar-fecha'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
   {
     key: 'anular',
@@ -61,7 +61,7 @@ export const otActionItems: OtActionItem[] = [
     buttonLabel: 'Anular OT',
     to: '/ot/anular',
     routePatterns: ['/ot/anular'],
-    requiredMenuId: 1,
+    requiredMenuId: 2,
   },
 ]
 

@@ -87,11 +87,12 @@ const ActionCard = ({ item, onOpen, index }: { item: OtActionItem; onOpen: () =>
 const OtDashboardPage = () => {
   const navigate = useNavigate()
   const { administrador, menuIds } = useAuth()
+  const hasOtFullAccess = administrador || menuIds.includes(2)
 
   const availableActions = useMemo(() => {
-    if (administrador) return otActionItems
+    if (hasOtFullAccess) return otActionItems
     return otActionItems.filter((item) => menuIds.includes(item.requiredMenuId))
-  }, [administrador, menuIds])
+  }, [hasOtFullAccess, menuIds])
 
   return (
     <div className="bento-page">

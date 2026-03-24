@@ -1,5 +1,8 @@
 import { otActionItems, otModuleMenuIds } from './otModule'
 
+const OT_FULL_ACCESS_MENU_ID = 2
+const otModuleAccessMenuIds = Array.from(new Set([...otModuleMenuIds, OT_FULL_ACCESS_MENU_ID]))
+
 export type NavigationItem = {
   label: string
   to: string
@@ -17,13 +20,13 @@ export const navigationItems: NavigationItem[] = [
     label: 'Gestion de Ordenes de Trabajo',
     to: '/ot',
     routePatterns: ['/ot'],
-    requiredAnyMenuIds: otModuleMenuIds,
+    requiredAnyMenuIds: otModuleAccessMenuIds,
   },
   ...otActionItems.map((action) => ({
     label: action.label,
     to: action.to,
     routePatterns: action.routePatterns,
-    requiredMenuIds: [action.requiredMenuId],
+    requiredAnyMenuIds: [action.requiredMenuId, OT_FULL_ACCESS_MENU_ID],
     showInSidebar: false,
   })),
   {
@@ -41,8 +44,8 @@ export const navigationItems: NavigationItem[] = [
       '/supervisor/conformacion-cuadrilla/crear',
       '/supervisor/conformacion-cuadrilla/editar',
     ],
-    requiredAnyMenuNames: ['tsm_conformacioncuadrillas', 'tsm_listaagenda'],
-    requiredAnyMenuIds: [62, 2],
+    requiredAnyMenuNames: ['tsm_conformacioncuadrillas'],
+    requiredAnyMenuIds: [1, 62],
   },
   {
     label: 'Pool de Privilegios',

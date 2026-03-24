@@ -49,8 +49,7 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
 const PRIVILEGIOS_ROUTE = '/admin/privilegios'
-const PRIVILEGIOS_BYPASS_USER_IDS = new Set<number>([4])
-const PRIVILEGIOS_BYPASS_ROLE_IDS = new Set<number>([4])
+const PRIVILEGIOS_ALLOWED_ROLE_ID = 4
 
 const toFiniteNumber = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) return value
@@ -246,16 +245,10 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
 
   const canAccessNavigationItem = useCallback(
     (item: NavigationItem): boolean => {
-      const activeUserId = toFiniteNumber(usuario?.idUsuario ?? permisos?.idUsuario ?? getSessionStorage()?.idUsuario)
       const activeRoleId = toFiniteNumber(permisos?.idRol ?? usuario?.idRol ?? getSessionStorage()?.idRol)
-      const hasPrivilegiosBypass =
-        item.to === PRIVILEGIOS_ROUTE &&
-        (
-          administrador ||
-          (activeUserId !== null && PRIVILEGIOS_BYPASS_USER_IDS.has(activeUserId)) ||
-          (activeRoleId !== null && PRIVILEGIOS_BYPASS_ROLE_IDS.has(activeRoleId))
-        )
-      if (hasPrivilegiosBypass) return true
+      if (item.to === PRIVILEGIOS_ROUTE) {
+        return activeRoleId !== null && activeRoleId === PRIVILEGIOS_ALLOWED_ROLE_ID
+      }
 
       if (!permisos) return false
       if (item.adminOnly && !administrador) return false
