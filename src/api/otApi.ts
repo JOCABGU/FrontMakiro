@@ -1,6 +1,7 @@
 import api from './http'
 import { normalizeArrayResponse } from './apiResponse'
 import type {
+  ListaOtParams,
   OtCreatePayload,
   OtCreateResult,
   OtCreateResponseEnvelope,
@@ -12,6 +13,7 @@ import type {
   OtSummary,
   OtUpdatePayload,
 } from '../types/ot'
+import { getSessionStorage } from '../utils/storage'
 
 type UnknownRecord = Record<string, unknown>
 
@@ -132,6 +134,43 @@ export const fetchOtList = async (params?: OtListParams): Promise<OtSummary[]> =
   const { data } = await api.get('/ot', {
     params: sanitizeParams(params),
   })
+  const rows = normalizeArrayResponse<UnknownRecord>(data)
+  return rows.map(mapOtSummary)
+}
+
+const buildListaOtQuery = (params: ListaOtParams): string => {
+  const searchParams = new URLSearchParams()
+  searchParams.set('fecha', params.fecha)
+
+  if (params.estado?.trim()) {
+    searchParams.set('estado', params.estado.trim())
+  }
+
+  if (params.estados?.length) {
+    params.estados
+      .map((estado) => estado.trim())
+      .filter(Boolean)
+      .forEach((estado) => {
+        searchParams.append('estados', estado)
+      })
+  }
+
+  if (params.tecnico?.trim()) {
+    searchParams.set('tecnico', params.tecnico.trim())
+  }
+
+  const hasSessionToken = Boolean(getSessionStorage()?.sessionToken)
+  if (!hasSessionToken && params.rol?.trim()) {
+    searchParams.set('rol', params.rol.trim())
+  }
+
+  return searchParams.toString()
+}
+
+export const fetchListaOt = async (params: ListaOtParams): Promise<OtSummary[]> => {
+  const query = buildListaOtQuery(params)
+  const endpoint = query ? `/ListaOt?${query}` : '/ListaOt'
+  const { data } = await api.get(endpoint)
   const rows = normalizeArrayResponse<UnknownRecord>(data)
   return rows.map(mapOtSummary)
 }

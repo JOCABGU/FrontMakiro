@@ -917,6 +917,8 @@ const ConformacionCuadrillaPage = () => {
   const [filterFecha, setFilterFecha] = useState<string>(todayValue)
   const [filterSucursal, setFilterSucursal] = useState<string>('')
   const [filterLimite] = useState<string>('200')
+  const [showOverviewPanel, setShowOverviewPanel] = useState(false)
+  const [showListFilters, setShowListFilters] = useState(false)
   const catalogSucursal = toSucursalActiva(filterSucursal)
 
   useEffect(() => {
@@ -2572,36 +2574,48 @@ const ConformacionCuadrillaPage = () => {
           Ver datos del tecnico bloqueado: requiere tsm_ConformacionCuadrillas.
         </div>
       ) : null}
-      <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-6">
-        <div className="min-w-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-          <p className="text-[11px] font-semibold text-amber-700">Pendientes</p>
-          <p className="text-lg font-bold text-amber-900">{pendientesTotalQuery.isLoading ? '...' : totalPendientes}</p>
-        </div>
-        <div className="min-w-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
-          <p className="text-[11px] font-semibold text-emerald-700">Confirmadas</p>
-          <p className="text-lg font-bold text-emerald-900">
-            {confirmadasTotalQuery.isLoading ? '...' : totalConfirmadas}
-          </p>
-        </div>
-        <div className="min-w-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
-          <p className="text-[11px] font-semibold text-rose-700">Eliminadas</p>
-          <p className="text-lg font-bold text-rose-900">{eliminadasTotalQuery.isLoading ? '...' : totalEliminadas}</p>
-        </div>
-        <div className="min-w-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
-          <p className="text-[11px] font-semibold text-sky-700">Total general</p>
-          <p className="text-lg font-bold text-sky-900">
-            {pendientesTotalQuery.isLoading || confirmadasTotalQuery.isLoading || eliminadasTotalQuery.isLoading ? '...' : totalGeneral}
-          </p>
-        </div>
-        <div className="col-span-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 xl:col-span-1">
-          <p className="text-[11px] font-semibold text-slate-600">Fecha activa</p>
-          <p className="break-words text-sm font-semibold text-slate-900">{fechaActivaLabel}</p>
-        </div>
-        <div className="col-span-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 xl:col-span-1">
-          <p className="text-[11px] font-semibold text-slate-600">Sucursal activa</p>
-          <p className="break-words text-sm font-semibold text-slate-900">{sucursalActivaLabel}</p>
-        </div>
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => setShowOverviewPanel((current) => !current)}
+          className="w-full sm:w-auto"
+        >
+          {showOverviewPanel ? 'Ocultar tablero' : 'Mostrar tablero'}
+        </Button>
       </div>
+      {showOverviewPanel ? (
+        <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-6">
+          <div className="min-w-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+            <p className="text-[11px] font-semibold text-amber-700">Pendientes</p>
+            <p className="text-lg font-bold text-amber-900">{pendientesTotalQuery.isLoading ? '...' : totalPendientes}</p>
+          </div>
+          <div className="min-w-0 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+            <p className="text-[11px] font-semibold text-emerald-700">Confirmadas</p>
+            <p className="text-lg font-bold text-emerald-900">
+              {confirmadasTotalQuery.isLoading ? '...' : totalConfirmadas}
+            </p>
+          </div>
+          <div className="min-w-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
+            <p className="text-[11px] font-semibold text-rose-700">Eliminadas</p>
+            <p className="text-lg font-bold text-rose-900">{eliminadasTotalQuery.isLoading ? '...' : totalEliminadas}</p>
+          </div>
+          <div className="min-w-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
+            <p className="text-[11px] font-semibold text-sky-700">Total general</p>
+            <p className="text-lg font-bold text-sky-900">
+              {pendientesTotalQuery.isLoading || confirmadasTotalQuery.isLoading || eliminadasTotalQuery.isLoading ? '...' : totalGeneral}
+            </p>
+          </div>
+          <div className="col-span-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 xl:col-span-1">
+            <p className="text-[11px] font-semibold text-slate-600">Fecha activa</p>
+            <p className="break-words text-sm font-semibold text-slate-900">{fechaActivaLabel}</p>
+          </div>
+          <div className="col-span-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 xl:col-span-1">
+            <p className="text-[11px] font-semibold text-slate-600">Sucursal activa</p>
+            <p className="break-words text-sm font-semibold text-slate-900">{sucursalActivaLabel}</p>
+          </div>
+        </div>
+      ) : null}
       {submitError && !modalOpen ? (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{submitError}</div>
       ) : null}
@@ -2622,69 +2636,81 @@ const ConformacionCuadrillaPage = () => {
           <div className="min-w-0 flex-1">
             <Tabs items={CUADRILLA_LIST_TABS} activeId={activeTab} onChange={(id) => setActiveTab(id as CuadrillaListTab)} />
           </div>
-          {canConfirmInActiveTab ? (
+          <div className="flex w-full flex-wrap gap-2 sm:w-auto sm:justify-end">
             <Button
-              variant="primary"
+              variant="secondary"
               type="button"
-              disabled={!canAsignarTecnicoGrupo || isSaving || listQuery.isLoading || !sucursalActiva || selectedRowsForConfirm.length === 0}
-              onClick={handleGuardarTodasCuadrillas}
+              onClick={() => setShowListFilters((current) => !current)}
               className="w-full sm:w-auto"
             >
-              {isSaving ? 'Guardando...' : `Subir marcado de hoy (${selectedRowsForConfirm.length})`}
+              {showListFilters ? 'Ocultar filtros' : 'Mostrar filtros'}
             </Button>
-          ) : null}
+            {canConfirmInActiveTab ? (
+              <Button
+                variant="primary"
+                type="button"
+                disabled={!canAsignarTecnicoGrupo || isSaving || listQuery.isLoading || !sucursalActiva || selectedRowsForConfirm.length === 0}
+                onClick={handleGuardarTodasCuadrillas}
+                className="w-full sm:w-auto"
+              >
+                {isSaving ? 'Guardando...' : `Subir marcado de hoy (${selectedRowsForConfirm.length})`}
+              </Button>
+            ) : null}
+          </div>
         </div>
-        <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
-          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-            <span>Sucursal</span>
-            <select
-              className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
-              value={filterSucursal}
-              onChange={(event) => setFilterSucursal(event.target.value)}
-              disabled={sucursalesQuery.isLoading || isSaving}
-            >
-              <option value="">
-                {sucursalesQuery.isLoading ? 'Cargando sucursales...' : 'Selecciona sucursal'}
-              </option>
-              {sucursalOptions.map((option) => (
-                <option key={`filtro-sucursal-${option.value}`} value={option.value}>
-                  {option.label}
+        {showListFilters ? (
+          <div className="mb-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end">
+            <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+              <span>Sucursal</span>
+              <select
+                className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                value={filterSucursal}
+                onChange={(event) => setFilterSucursal(event.target.value)}
+                disabled={sucursalesQuery.isLoading || isSaving}
+              >
+                <option value="">
+                  {sucursalesQuery.isLoading ? 'Cargando sucursales...' : 'Selecciona sucursal'}
                 </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-            <span>Fecha</span>
-            <input
-              className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
-              type="date"
-              value={filterFecha}
-              onChange={(event) => setFilterFecha(event.target.value || todayValue)}
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
-            <span>Buscar</span>
-            <input
-              className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
-              type="text"
-              value={listSearchInput}
-              onChange={(event) => setListSearchInput(event.target.value)}
-              placeholder="Tecnico, auxiliar, digitador, actividad, vehiculo..."
-            />
-          </label>
-          <Button
-            variant="secondary"
-            type="button"
-            className="h-9 xl:self-end"
-            onClick={() => {
-              setFilterFecha(todayValue)
-              setListSearchInput('')
-            }}
-            disabled={filterFecha === todayValue && !listSearchInput}
-          >
-            Limpiar filtros
-          </Button>
-        </div>
+                {sucursalOptions.map((option) => (
+                  <option key={`filtro-sucursal-${option.value}`} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+              <span>Fecha</span>
+              <input
+                className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                type="date"
+                value={filterFecha}
+                onChange={(event) => setFilterFecha(event.target.value || todayValue)}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-xs text-slate-600 [&>span]:font-semibold [&>span]:text-slate-800">
+              <span>Buscar</span>
+              <input
+                className="input-base h-9 border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800 shadow-sm focus:border-sky-500 focus:ring-sky-200"
+                type="text"
+                value={listSearchInput}
+                onChange={(event) => setListSearchInput(event.target.value)}
+                placeholder="Tecnico, auxiliar, digitador, actividad, vehiculo..."
+              />
+            </label>
+            <Button
+              variant="secondary"
+              type="button"
+              className="h-9 xl:self-end"
+              onClick={() => {
+                setFilterFecha(todayValue)
+                setListSearchInput('')
+              }}
+              disabled={filterFecha === todayValue && !listSearchInput}
+            >
+              Limpiar filtros
+            </Button>
+          </div>
+        ) : null}
         <div className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs text-slate-600">
           Origen activo por sucursal: {selectedInitialSource === 'DB_SUCRE' ? 'DB Sucre' : 'U Tecnicos'}. El listado y catalogos se cargan desde conformacion-cuadrilla-web.
         </div>
@@ -2856,7 +2882,9 @@ const ConformacionCuadrillaPage = () => {
               const issue = rowIssues[index]
               const shouldHighlightRowIssue = Boolean(issue?.hasIssue) && showStrictValidation && !isLocalViewMode
               const isLocalMissingInfo = Boolean(issue?.missingFields?.length) && isLocalViewMode
-              const isCompactEditMode = modalMode === 'edit'
+              // Mantener el mismo set de campos en vista previa y en edicion
+              // para evitar saltos visuales al presionar "Editar".
+              const isCompactEditMode = true
               const rowVehiculoOptions = row.idTecnico ? vehiculoOptionsByTecnico.get(row.idTecnico) ?? [] : []
               const rowVehiculoByValue = new Set(rowVehiculoOptions.map((option) => option.value))
               const isVehiculosLoading =

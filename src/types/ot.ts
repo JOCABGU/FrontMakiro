@@ -50,6 +50,14 @@ export interface OtListParams {
   pendiente?: boolean
 }
 
+export interface ListaOtParams {
+  fecha: string
+  estado?: string
+  estados?: string[]
+  tecnico?: string
+  rol?: string
+}
+
 export interface OtRealizadaPayload {
   observacion: string
   idEstado: number

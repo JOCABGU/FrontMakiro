@@ -5,17 +5,18 @@ import Button from '../components/common/Button'
 import Field from '../components/common/Field'
 import Table from '../components/common/Table'
 import type { Column } from '../components/common/Table'
-import { fetchOtList } from '../api/otApi'
+import { fetchListaOt, fetchOtList } from '../api/otApi'
 import type { OtSummary } from '../types/ot'
 import { formatDate, todayISO } from '../utils/dates'
 import { useSessionStore } from '../store/sessionStore'
 
-type FilterMode = 'fecha' | 'rango'
 type ViewMode = 'horario' | 'buscar' | 'calendario'
 type SessionLike = { idUsuario?: number; nombre?: string } | null | undefined
 
 const ROLE_SUPERVISOR_ID = 9
 const ROLE_TECNICO_ID = 8
+const ROLE_ADMIN_ID = 4
+const DEFAULT_ESTADO_FILTER_OPTIONS = ['pendiente', 'en proceso', 'ejecutada', 'aceptado', 'fallida con visita']
 const GROUP_STYLES = [
   'bg-amber-200 text-amber-900',
   'bg-sky-200 text-sky-900',
@@ -106,22 +107,6 @@ const getOtEstado = (row: OtSummary): string => {
   return typeof value === 'string' ? value : String(value)
 }
 
-const isPendingStatus = (row: OtSummary): boolean => {
-  const estado = normalizeText(getOtEstado(row))
-  if (!estado) return true
-  if (estado.includes('pendiente')) return true
-  if (estado.includes('en proceso')) return true
-  if (estado.includes('programad')) return true
-  if (estado.includes('reprogramad')) return true
-  if (estado.includes('asignad')) return true
-  if (estado.includes('no realizado')) return true
-  if (estado.includes('finaliz')) return false
-  if (estado.includes('cancel')) return false
-  if (estado.includes('anulad')) return false
-  if (estado.includes('cerrad')) return false
-  return true
-}
-
 const isAssignedToUser = (row: OtSummary, session: SessionLike): boolean => {
   const userId = getOtUsuarioId(row)
   if (userId !== undefined && session?.idUsuario !== undefined) {
@@ -171,6 +156,12 @@ const pad2 = (value: number): string => String(value).padStart(2, '0')
 
 const formatISODate = (date: Date): string => {
   return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`
+}
+
+const formatDateDMY = (value: string): string => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value)
+  if (!match) return value
+  return `${match[3]}/${match[2]}/${match[1]}`
 }
 
 const toISODate = (value?: string): string => {
@@ -224,11 +215,6 @@ const getCalendarRange = (anchor: Date): { start: Date; end: Date; gridStart: Da
 }
 
 const OtListPage = () => {
-  const [mode, setMode] = useState<FilterMode>('fecha')
-  const [fecha, setFecha] = useState(todayISO())
-  const [inicio, setInicio] = useState(todayISO())
-  const [fin, setFin] = useState(todayISO())
-  const [isFilterOpen, setIsFilterOpen] = useState(false)
   const [view, setView] = useState<ViewMode>('horario')
   const [calendarAnchor, setCalendarAnchor] = useState<Date>(() => new Date())
   const [isMobile, setIsMobile] = useState(false)
@@ -241,6 +227,7 @@ const OtListPage = () => {
   const roleName = normalizeText(session?.rol ?? '')
   const isSupervisor = roleId === ROLE_SUPERVISOR_ID || roleName === 'supervisor'
   const isTecnico = roleId === ROLE_TECNICO_ID || roleName === 'tecnico'
+  const isSistemasOrAdmin = roleId === ROLE_ADMIN_ID || roleName.includes('sistema') || roleName.includes('admin')
 
   useEffect(() => {
     if (!isSupervisor && view === 'calendario') {
@@ -263,60 +250,97 @@ const OtListPage = () => {
 
   const todayKey = todayISO()
   const [horarioFecha, setHorarioFecha] = useState(todayKey)
-  const horarioLabel = formatDate(horarioFecha)
+  const [buscarFecha, setBuscarFecha] = useState(todayKey)
+  const [selectedEstados, setSelectedEstados] = useState<string[]>([])
+  const [tecnicoInput, setTecnicoInput] = useState('')
+  const [tecnicoDebounced, setTecnicoDebounced] = useState('')
+  const horarioLabel = formatDateDMY(horarioFecha)
+  const buscarLabel = formatDateDMY(buscarFecha)
   const apiRole = session?.rol?.trim() || undefined
   const apiUserId = session?.idUsuario
+  const selectedEstadosCsv = useMemo(() => selectedEstados.join(','), [selectedEstados])
+  const estadoListParam = selectedEstados.length ? selectedEstados : undefined
+  const estadoCsvParam = selectedEstadosCsv || undefined
 
-  const isTodaySelected = mode === 'fecha' && fecha === todayKey
-  const queryKey = useMemo(
-    () => ['ot-list', mode, fecha, inicio, fin, apiRole ?? '', apiUserId ?? 0],
-    [apiRole, apiUserId, mode, fecha, inicio, fin]
-  )
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      setTecnicoDebounced(tecnicoInput.trim())
+    }, 400)
+    return () => window.clearTimeout(timeoutId)
+  }, [tecnicoInput])
 
-  const query = useQuery({
-    queryKey,
+  const horarioQuery = useQuery({
+    queryKey: ['ot-horario-listaot', horarioFecha, selectedEstadosCsv, apiRole ?? ''],
     queryFn: () =>
-      fetchOtList(
-        mode === 'fecha'
-          ? isTodaySelected
-            ? { rol: apiRole, usuario: apiUserId, pendiente: true }
-            : { fecha, rol: apiRole, usuario: apiUserId, pendiente: true }
-          : {
-              inicio,
-              fin,
-              rol: apiRole,
-              usuario: apiUserId,
-              pendiente: true,
-            }
-      ),
-    enabled: isTodaySelected,
+      fetchListaOt({
+        fecha: horarioFecha,
+        estado: estadoCsvParam,
+        estados: estadoListParam,
+        rol: apiRole,
+      }),
   })
 
-  const listDataRaw = query.data ?? []
-  const listData = useMemo(() => {
-    let items = listDataRaw
-    if (isSupervisor) {
-      items = items.filter(isPendingStatus)
-    } else if (isTecnico) {
-      items = items.filter((row) => isPendingStatus(row) && isAssignedToUser(row, session))
-    } else {
-      items = items.filter(isPendingStatus)
-    }
-    return items
-  }, [isSupervisor, isTecnico, listDataRaw, session])
+  const buscarQuery = useQuery({
+    queryKey: ['ot-buscar-listaot', buscarFecha, selectedEstadosCsv, isSistemasOrAdmin ? tecnicoDebounced : '', apiRole ?? ''],
+    queryFn: () =>
+      fetchListaOt({
+        fecha: buscarFecha,
+        estado: estadoCsvParam,
+        estados: estadoListParam,
+        tecnico: isSistemasOrAdmin && tecnicoDebounced ? tecnicoDebounced : undefined,
+        rol: apiRole,
+      }),
+  })
 
-  const missingTecnicoInfo = useMemo(() => {
-    if (!isTecnico || listDataRaw.length === 0) return null
-    const hasUserId = listDataRaw.some((row) => getOtUsuarioId(row) !== undefined)
-    const hasUserName = listDataRaw.some((row) => normalizeText(getOtUsuarioNombre(row)))
-    if (!hasUserId && !hasUserName) {
-      return 'La respuesta de OT no incluye id o nombre del tecnico para filtrar. Se requiere SP por tecnico.'
-    }
-    if (!session?.idUsuario && !session?.nombre) {
-      return 'Tu sesion no incluye idUsuario o nombre para filtrar.'
-    }
-    return null
-  }, [isTecnico, listDataRaw, session])
+  const horarioDataRaw = horarioQuery.data ?? []
+  const horarioData = horarioDataRaw
+  const buscarDataRaw = buscarQuery.data ?? []
+  const buscarData = buscarDataRaw
+
+  const discoveredEstadoOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    ;[...horarioDataRaw, ...buscarDataRaw].forEach((row) => {
+      const estado = getOtEstado(row).trim()
+      if (!estado) return
+      const key = normalizeText(estado)
+      if (!map.has(key)) {
+        map.set(key, estado)
+      }
+    })
+    return Array.from(map.values())
+  }, [buscarDataRaw, horarioDataRaw])
+
+  const estadoFilterOptions = useMemo(() => {
+    const map = new Map<string, string>()
+    DEFAULT_ESTADO_FILTER_OPTIONS.forEach((option) => {
+      map.set(normalizeText(option), option)
+    })
+    discoveredEstadoOptions.forEach((option) => {
+      map.set(normalizeText(option), option)
+    })
+    return Array.from(map.values())
+  }, [discoveredEstadoOptions])
+
+  const toggleEstadoFilter = (estado: string) => {
+    setSelectedEstados((current) => {
+      const exists = current.includes(estado)
+      if (exists) return current.filter((item) => item !== estado)
+      return [...current, estado]
+    })
+  }
+
+  const buscarErrorMessage =
+    buscarQuery.isError && buscarQuery.error instanceof Error && buscarQuery.error.message
+      ? buscarQuery.error.message
+      : buscarQuery.isError
+        ? 'No se pudieron cargar las OT. Verifica la conexion con el backend.'
+        : null
+  const horarioErrorMessage =
+    horarioQuery.isError && horarioQuery.error instanceof Error && horarioQuery.error.message
+      ? horarioQuery.error.message
+      : horarioQuery.isError
+        ? 'No se pudieron cargar las OT. Verifica la conexion con el backend.'
+        : null
 
   const columns: Column<OtSummary>[] = [
     {
@@ -360,36 +384,6 @@ const OtListPage = () => {
       },
     },
   ]
-
-  const errorMessage =
-    query.isError && query.error instanceof Error && query.error.message
-      ? query.error.message
-      : query.isError
-        ? 'No se pudieron cargar las OT. Verifica la conexion con el backend.'
-        : null
-
-  const horarioQuery = useQuery({
-    queryKey: ['ot-horario', horarioFecha, apiRole ?? '', apiUserId ?? 0],
-    queryFn: () =>
-      fetchOtList(
-        horarioFecha === todayKey
-          ? { rol: apiRole, usuario: apiUserId, pendiente: true }
-          : { fecha: horarioFecha, rol: apiRole, usuario: apiUserId, pendiente: true }
-      ),
-  })
-
-  const horarioDataRaw = horarioQuery.data ?? []
-  const horarioData = useMemo(() => {
-    let items = horarioDataRaw
-    if (isSupervisor) {
-      items = items.filter(isPendingStatus)
-    } else if (isTecnico) {
-      items = items.filter((row) => isPendingStatus(row) && isAssignedToUser(row, session))
-    } else {
-      items = items.filter(isPendingStatus)
-    }
-    return items
-  }, [horarioDataRaw, isSupervisor, isTecnico, session])
 
   const scheduleGroups = useMemo(() => {
     const byHour = new Map<string, OtSummary[]>()
@@ -493,12 +487,9 @@ const OtListPage = () => {
 
   const handleSelectView = (next: ViewMode) => {
     setView(next)
-    if (next === 'buscar') {
-      setIsFilterOpen(true)
-    }
   }
 
-  const emptyLabel = isTecnico ? 'No hay OT pendientes asignadas al tecnico.' : 'No hay OT pendientes.'
+  const emptyLabel = isTecnico ? 'No hay OT para esta fecha/filtros.' : 'No hay OT para esta fecha/filtros.'
 
   return (
     <div className="bento-page">
@@ -534,7 +525,7 @@ const OtListPage = () => {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="section-title">Horario</h3>
-              <p className="text-xs text-slate-500">OT pendientes organizadas por hora.</p>
+              <p className="text-xs text-slate-500">OT organizadas por hora segun fecha y estado.</p>
             </div>
             {horarioQuery.isFetching ? <span className="text-xs text-slate-500">Actualizando...</span> : null}
           </div>
@@ -550,21 +541,49 @@ const OtListPage = () => {
             </div>
           </div>
 
+          <div className="mt-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Estados</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {estadoFilterOptions.map((estado) => {
+                const selected = selectedEstados.includes(estado)
+                return (
+                  <button
+                    key={`estado-horario-${estado}`}
+                    type="button"
+                    onClick={() => toggleEstadoFilter(estado)}
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      selected
+                        ? 'border-brand-300 bg-brand-100 text-brand-700'
+                        : 'border-slate-300 bg-white text-slate-600 hover:border-brand-200 hover:text-brand-600'
+                    }`}
+                  >
+                    {estado}
+                  </button>
+                )
+              })}
+              {selectedEstados.length > 0 ? (
+                <Button variant="ghost" type="button" onClick={() => setSelectedEstados([])}>
+                  Limpiar estados
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
           <div className="mt-4 flex items-center justify-between">
-            <span className="text-sm font-semibold text-slate-700">{horarioLabel || 'Hoy'}</span>
+            <span className="text-sm font-semibold text-slate-700">{horarioLabel}</span>
             <span className="text-xs text-slate-400">{horarioData.length} OT</span>
           </div>
 
-          {horarioQuery.isError ? (
+          {horarioErrorMessage ? (
             <div className="mt-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
-              No se pudo cargar el horario de hoy. Intenta nuevamente.
+              {horarioErrorMessage}
             </div>
           ) : null}
 
           <div className="mt-4 space-y-3">
             {scheduleGroups.groups.length === 0 && scheduleGroups.withoutTime.length === 0 ? (
               <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-500">
-                No hay OT pendientes para hoy.
+                No hay OT para esta fecha/filtros.
               </div>
             ) : null}
 
@@ -652,23 +671,67 @@ const OtListPage = () => {
         <div className="glass-panel p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h3 className="section-title">Resultados</h3>
-              <p className="text-xs text-slate-500">Usa el boton Buscar para filtrar las OT.</p>
+              <h3 className="section-title">Buscar</h3>
+              <p className="text-xs text-slate-500">Filtra por fecha, estado y tecnico (Sistemas/Admin).</p>
             </div>
-            <Button type="button" onClick={() => setIsFilterOpen(true)}>
-              Buscar OT
-            </Button>
+            {buscarQuery.isFetching ? <span className="text-xs text-slate-500">Actualizando...</span> : null}
           </div>
-          <div className="mt-4">
-            {missingTecnicoInfo ? (
-              <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                {missingTecnicoInfo}
-              </div>
+
+          <div className="mt-4 grid gap-4 md:grid-cols-2">
+            <Field label="Fecha">
+              <input className="input-base" type="date" value={buscarFecha} onChange={(event) => setBuscarFecha(event.target.value)} />
+            </Field>
+            {isSistemasOrAdmin ? (
+              <Field label="Tecnico">
+                <input
+                  className="input-base"
+                  type="text"
+                  value={tecnicoInput}
+                  onChange={(event) => setTecnicoInput(event.target.value)}
+                  placeholder="Buscar por nombre de tecnico..."
+                />
+              </Field>
             ) : null}
-            {errorMessage ? (
-              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{errorMessage}</div>
+          </div>
+
+          <div className="mt-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Estados</p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {estadoFilterOptions.map((estado) => {
+                const selected = selectedEstados.includes(estado)
+                return (
+                  <button
+                    key={`estado-buscar-${estado}`}
+                    type="button"
+                    onClick={() => toggleEstadoFilter(estado)}
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      selected
+                        ? 'border-brand-300 bg-brand-100 text-brand-700'
+                        : 'border-slate-300 bg-white text-slate-600 hover:border-brand-200 hover:text-brand-600'
+                    }`}
+                  >
+                    {estado}
+                  </button>
+                )
+              })}
+              {selectedEstados.length > 0 ? (
+                <Button variant="ghost" type="button" onClick={() => setSelectedEstados([])}>
+                  Limpiar estados
+                </Button>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center justify-between">
+            <span className="text-sm font-semibold text-slate-700">{buscarLabel}</span>
+            <span className="text-xs text-slate-400">{buscarData.length} OT</span>
+          </div>
+
+          <div className="mt-4">
+            {buscarErrorMessage ? (
+              <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{buscarErrorMessage}</div>
             ) : (
-              <Table columns={columns} data={listData} emptyLabel={emptyLabel} />
+              <Table columns={columns} data={buscarData} emptyLabel={emptyLabel} />
             )}
           </div>
         </div>
@@ -841,62 +904,6 @@ const OtListPage = () => {
         </div>
       ) : null}
 
-      {isFilterOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
-          <div className="w-full max-w-2xl rounded-3xl bg-white p-6 shadow-xl">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h3 className="text-xl font-semibold text-slate-900">Buscar OT</h3>
-                <p className="text-sm text-slate-500">Selecciona el tipo de busqueda para consultar las OT.</p>
-              </div>
-              <Button variant="ghost" type="button" onClick={() => setIsFilterOpen(false)}>
-                Cerrar
-              </Button>
-            </div>
-
-            <div className="mt-6 flex flex-wrap items-center gap-3">
-              <Button variant={mode === 'fecha' ? 'primary' : 'secondary'} type="button" onClick={() => setMode('fecha')}>
-                Fecha unica
-              </Button>
-              <Button variant={mode === 'rango' ? 'primary' : 'secondary'} type="button" onClick={() => setMode('rango')}>
-                Rango de fechas
-              </Button>
-            </div>
-
-            <div className="mt-5 grid gap-4 md:grid-cols-2">
-              {mode === 'fecha' ? (
-                <Field label="Fecha">
-                  <input className="input-base" type="date" value={fecha} onChange={(event) => setFecha(event.target.value)} />
-                </Field>
-              ) : (
-                <>
-                  <Field label="Inicio">
-                    <input className="input-base" type="date" value={inicio} onChange={(event) => setInicio(event.target.value)} />
-                  </Field>
-                  <Field label="Fin">
-                    <input className="input-base" type="date" value={fin} onChange={(event) => setFin(event.target.value)} />
-                  </Field>
-                </>
-              )}
-            </div>
-
-            <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
-              <Button variant="secondary" type="button" onClick={() => setIsFilterOpen(false)}>
-                Cancelar
-              </Button>
-              <Button
-                type="button"
-                onClick={() => {
-                  query.refetch()
-                  setIsFilterOpen(false)
-                }}
-              >
-                Buscar OT
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }
