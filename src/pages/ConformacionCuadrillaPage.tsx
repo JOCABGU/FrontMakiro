@@ -13,7 +13,6 @@ import {
   fetchConformacionAuxiliares,
   fetchConformacionCuadrillaById,
   fetchConformacionCuadrillaConfirmadas,
-  fetchConformacionCuadrillaEliminadas,
   fetchConformacionCuadrillaPendientes,
   fetchConformacionDigitadores,
   fetchConformacionGrupos,
@@ -23,15 +22,20 @@ import {
   fetchConformacionTecnicos,
   fetchConformacionVehiculos,
   guardarConformacionCuadrillaConfirmada,
+  guardarRelacionCuadrilla,
   updateConformacionCuadrilla,
 } from '../api/conformacionCuadrillaApi'
-import type { ConformacionCuadrillaInput, ConformacionCuadrillaRecord } from '../types/conformacionCuadrilla'
+import type {
+  ConformacionCuadrillaInput,
+  ConformacionCuadrillaRecord,
+  ConformacionCuadrillaRelacionPayload,
+} from '../types/conformacionCuadrilla'
 import { formatDate, todayISO } from '../utils/dates'
 import { useSessionStore } from '../store/sessionStore'
 import { useAuth } from '../context/AuthContext'
 
 type CuadrillaModalMode = 'view' | 'edit'
-type CuadrillaListTab = 'general' | 'confirmadas' | 'eliminadas'
+type CuadrillaListTab = 'general' | 'confirmadas'
 
 type EditableRow = {
   id?: number
@@ -103,6 +107,15 @@ type PendingUpdateItem = {
   target: UpdateTarget
 }
 
+type EditAssignmentSnapshot = {
+  idRuta: number | null
+  idTecnicoAuxiliar: string
+  auxiliar: string
+  idUsuarioDigitador: string
+  digitador: string
+  sucursal: string
+}
+
 type PendingConfirmation =
   {
     mode: 'create'
@@ -115,7 +128,6 @@ type PendingConfirmation =
 const CUADRILLA_LIST_TABS: { id: CuadrillaListTab; label: string }[] = [
   { id: 'general', label: 'General (pendientes)' },
   { id: 'confirmadas', label: 'Confirmadas' },
-  { id: 'eliminadas', label: 'Eliminadas' },
 ]
 
 const MENU_NAME_CONFORMACION_CUADRILLAS = 'tsm_conformacioncuadrillas'
@@ -125,7 +137,6 @@ const ESTADO_OPTIONS = ['ACTIVO', 'AUSENTE'] as const
 const HABILIDAD_OPTIONS = ['RECLAMOS', 'INSTALACION'] as const
 const CONFIRMAR_MARCADO_MODAL_TEXT =
   '\u00BFDesea confirmar los datos del marcado de hoy? Esta acci\u00F3n no se podr\u00E1 confirmar nuevamente.'
-const cuadrillaDebugEnabled = import.meta.env.VITE_API_DEBUG === 'true'
 const detalleApiDisponible = import.meta.env.VITE_CUADRILLA_DETALLE_API_AVAILABLE !== 'false'
 
 const normalizeLookupKey = (key: string): string => key.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -148,7 +159,7 @@ const isSantaCruzBranch = (value: string): boolean => {
 const toSucursalActiva = (value: string): string => {
   const normalizedValue = value.trim()
   if (!normalizedValue) return ''
-  if (isSantaCruzBranch(normalizedValue)) return 'Santa_Cruz'
+  if (isSantaCruzBranch(normalizedValue)) return 'SantaCruz'
   if (isSucreBranch(normalizedValue)) return 'Sucre'
   return normalizedValue
 }
@@ -827,7 +838,7 @@ const toVisualLabel = (value: string | undefined | null, emptyLabel: string): st
 }
 
 const buildConfirmadasVersionKey = (row: ConformacionCuadrillaRecord): string | null => {
-  const fecha = toISODate(row.fecha)
+  const fecha = toISODate(row.fecha ?? undefined)
   const sucursal = normalizeLookupKey(String(row.sucursal ?? ''))
   const tecnicoId = String(row.idTecnico ?? '').trim()
   if (tecnicoId) return `f:${fecha}|t:${tecnicoId}|s:${sucursal}`
@@ -845,11 +856,16 @@ const buildConfirmadasVersionKey = (row: ConformacionCuadrillaRecord): string | 
 const getRecordSelectionKey = (row: ConformacionCuadrillaRecord): string => {
   const idReal = getRecordRealId(row)
   if (idReal !== null) return `id:${idReal}`
-  const fecha = toISODate(row.fecha)
+  const fecha = toISODate(row.fecha ?? undefined)
   const tecnicoId = readRecordId(row, RECORD_ID_TECNICO_KEYS, row.idTecnico)
   const tecnico = (row.tecnico ?? '').trim().toLowerCase()
   const sucursal = (row.sucursal ?? '').trim().toLowerCase()
   return [fecha, tecnicoId || tecnico, sucursal].join('|')
+}
+
+const buildLocalConfirmedSignature = (row: ConformacionCuadrillaRecord): string => {
+  const normalized = normalizeListRecord(row)
+  return buildConfirmadasVersionKey(normalized) ?? getRecordSelectionKey(normalized)
 }
 
 const getRecordRealId = (row: ConformacionCuadrillaRecord): number | null => {
@@ -857,6 +873,51 @@ const getRecordRealId = (row: ConformacionCuadrillaRecord): number | null => {
   const parsed = toOptionalNumber(idRealCandidate)
   if (parsed === undefined || parsed <= 0) return null
   return parsed
+}
+
+const getRecordRutaId = (row: ConformacionCuadrillaRecord): number | null => {
+  const idRutaCandidate = readValue(row as unknown as CatalogItem, RECORD_ID_RUTA_KEYS) ?? row.idRuta
+  const parsed = toOptionalNumber(idRutaCandidate)
+  if (parsed === undefined || parsed <= 0) return null
+  return parsed
+}
+
+const normalizeComparableId = (value: string | undefined | null): string => {
+  const parsed = Number(String(value ?? '').trim())
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return String(Math.trunc(parsed))
+  }
+  return ''
+}
+
+const normalizeComparableLabel = (value: string | undefined | null): string => {
+  return String(value ?? '').trim()
+}
+
+const buildEditAssignmentSnapshotFromRecord = (record: ConformacionCuadrillaRecord): EditAssignmentSnapshot => {
+  return {
+    idRuta: getRecordRutaId(record),
+    idTecnicoAuxiliar: normalizeComparableId(readRecordId(record, RECORD_ID_AUXILIAR_KEYS, record.idTecnicoAuxiliar)),
+    auxiliar: normalizeComparableLabel(readRecordString(record, RECORD_AUXILIAR_LABEL_KEYS, record.auxiliar ?? '')),
+    idUsuarioDigitador: normalizeComparableId(readRecordId(record, RECORD_ID_DIGITADOR_KEYS, record.idUsuarioDigitador)),
+    digitador: normalizeComparableLabel(readRecordString(record, RECORD_DIGITADOR_LABEL_KEYS, record.digitador ?? '')),
+    sucursal: normalizeComparableLabel(readRecordString(record, RECORD_SUCURSAL_KEYS, record.sucursal ?? '')),
+  }
+}
+
+const buildEditAssignmentSnapshotFromRow = (
+  row: EditableRow,
+  fallbackIdRuta: number | null,
+  fallbackSucursal: string
+): EditAssignmentSnapshot => {
+  return {
+    idRuta: fallbackIdRuta,
+    idTecnicoAuxiliar: normalizeComparableId(row.idTecnicoAuxiliar),
+    auxiliar: normalizeComparableLabel(row.auxiliar),
+    idUsuarioDigitador: normalizeComparableId(row.idUsuarioDigitador),
+    digitador: normalizeComparableLabel(row.digitador),
+    sucursal: normalizeComparableLabel(row.sucursal || fallbackSucursal),
+  }
 }
 
 const ConformacionCuadrillaPage = () => {
@@ -905,6 +966,7 @@ const ConformacionCuadrillaPage = () => {
   const [showStrictValidation, setShowStrictValidation] = useState(false)
   const [selectedConfirmKeys, setSelectedConfirmKeys] = useState<string[]>([])
   const [activeDetailConfirmKey, setActiveDetailConfirmKey] = useState<string | null>(null)
+  const [editInitialSnapshot, setEditInitialSnapshot] = useState<EditAssignmentSnapshot | null>(null)
   const [pendingConfirmation, setPendingConfirmation] = useState<PendingConfirmation | null>(null)
   const [pendingReassignmentPrompt, setPendingReassignmentPrompt] = useState<PendingReassignmentPrompt | null>(null)
   const [approvedReassignments, setApprovedReassignments] = useState<AssignmentTransfer[]>([])
@@ -1199,26 +1261,39 @@ const ConformacionCuadrillaPage = () => {
     const direct = readRecordString(row, ['habilidad', 'Habilidad'], row.habilidad ?? '')
     return toVisualLabel(direct, 'Sin habilidad')
   }
+  const isRecordFromTodayForConfirmadas = (row: ConformacionCuadrillaRecord, todayDate: string): boolean => {
+    const fechaTrabajo = toISODate(row.fecha ?? undefined)
+    const fechaRegistro = toISODate(row.fechaRegistro ?? undefined)
+
+    // Si viene alguna fecha anterior, no se debe mostrar en confirmadas.
+    if (fechaTrabajo && fechaTrabajo < todayDate) return false
+    if (fechaRegistro && fechaRegistro < todayDate) return false
+
+    if (fechaTrabajo) return fechaTrabajo === todayDate
+    if (fechaRegistro) return fechaRegistro === todayDate
+    return false
+  }
   const selectedFechaFiltro = toISODate(filterFecha) || todayValue
+  const confirmadasFechaFiltro = todayValue
+  const fechaFiltroForList = activeTab === 'confirmadas' ? confirmadasFechaFiltro : selectedFechaFiltro
   const listQuery = useQuery({
     queryKey: [
       'conformacion-cuadrilla-tab-list',
       activeTab,
       sucursalActiva,
-      selectedFechaFiltro ?? '',
+      fechaFiltroForList ?? '',
       listSearch,
       limitNumber,
     ],
     queryFn: () => {
       const params = {
         sucursal: sucursalActiva || undefined,
-        fecha: selectedFechaFiltro,
+        fecha: fechaFiltroForList,
         q: listSearch || undefined,
-        limit: limitNumber,
+        limite: limitNumber,
       }
       if (activeTab === 'general') return fetchConformacionCuadrillaPendientes(params)
       if (activeTab === 'confirmadas') return fetchConformacionCuadrillaConfirmadas(params)
-      if (activeTab === 'eliminadas') return fetchConformacionCuadrillaEliminadas(params)
       return fetchConformacionCuadrillaPendientes(params)
     },
     enabled: canViewCuadrillas,
@@ -1229,31 +1304,20 @@ const ConformacionCuadrillaPage = () => {
       fetchConformacionCuadrillaPendientes({
         sucursal: sucursalActiva || undefined,
         fecha: selectedFechaFiltro,
-        limit: limitNumber,
+        limite: limitNumber,
       }),
     enabled: canViewCuadrillas,
   })
   const confirmadasTotalQuery = useQuery({
-    queryKey: ['conformacion-cuadrilla-tab-total', 'confirmadas', sucursalActiva, selectedFechaFiltro ?? '', '', limitNumber],
+    queryKey: ['conformacion-cuadrilla-tab-total', 'confirmadas', sucursalActiva, confirmadasFechaFiltro, '', limitNumber],
     queryFn: () =>
       fetchConformacionCuadrillaConfirmadas({
         sucursal: sucursalActiva || undefined,
-        fecha: selectedFechaFiltro,
-        limit: limitNumber,
+        fecha: confirmadasFechaFiltro,
+        limite: limitNumber,
       }),
     enabled: canViewCuadrillas,
   })
-  const eliminadasTotalQuery = useQuery({
-    queryKey: ['conformacion-cuadrilla-tab-total', 'eliminadas', sucursalActiva, selectedFechaFiltro ?? '', '', limitNumber],
-    queryFn: () =>
-      fetchConformacionCuadrillaEliminadas({
-        sucursal: sucursalActiva || undefined,
-        fecha: selectedFechaFiltro,
-        limit: limitNumber,
-      }),
-    enabled: canViewCuadrillas,
-  })
-
   const sortByRegistroDesc = (rows: ConformacionCuadrillaRecord[]): ConformacionCuadrillaRecord[] => {
     return rows.sort((a, b) => {
       const aEstado = a.confirmada ? 'Confirmada' : resolveEstadoForList(a)
@@ -1266,18 +1330,31 @@ const ConformacionCuadrillaPage = () => {
       return right.localeCompare(left)
     })
   }
+  const confirmedDbTodaySignatureSet = useMemo(() => {
+    const rows = (confirmadasTotalQuery.data ?? [])
+      .map(normalizeListRecord)
+      .filter((row) => row.confirmada === true && isRecordFromTodayForConfirmadas(row, confirmadasFechaFiltro))
+    return new Set(rows.map((row) => buildLocalConfirmedSignature(row)))
+  }, [confirmadasFechaFiltro, confirmadasTotalQuery.data])
+
+  const isConfirmedInDbToday = (row: ConformacionCuadrillaRecord): boolean => {
+    const normalized = normalizeListRecord(row)
+    return confirmedDbTodaySignatureSet.has(buildLocalConfirmedSignature(normalized))
+  }
+
   const listDataForValidation = useMemo(() => {
     const normalized = (listQuery.data ?? []).map(normalizeListRecord)
     const filtered = normalized.filter((row) => {
-      if (activeTab === 'confirmadas') return row.confirmada === true
-      if (activeTab === 'eliminadas') return isRowEliminado(row)
-      return row.confirmada !== true && !isRowEliminado(row)
+      if (activeTab === 'confirmadas') {
+        return row.confirmada === true && isRecordFromTodayForConfirmadas(row, confirmadasFechaFiltro)
+      }
+      return row.confirmada !== true && !isRowEliminado(row) && !isConfirmedInDbToday(row)
     })
     return filtered.map((row) => {
       const key = getRecordSelectionKey(row)
       return sessionDraftByKey[key] ?? row
     })
-  }, [activeTab, listQuery.data, sessionDraftByKey])
+  }, [activeTab, confirmadasFechaFiltro, confirmedDbTodaySignatureSet, listQuery.data, sessionDraftByKey])
   const listData = useMemo(() => {
     const sorted = sortByRegistroDesc([...listDataForValidation])
     if (activeTab === 'confirmadas') {
@@ -1296,8 +1373,7 @@ const ConformacionCuadrillaPage = () => {
       }
       return deduped
     }
-    // Only apply deduplication for the 'general' tab. For 'confirmadas' and 'eliminadas'
-    // we want to show all matching rows so counts match the API totals.
+    // Only apply deduplication for the 'general' tab.
     if (activeTab !== 'general') return sorted
     const seenGroups = new Set<string>()
     const seenVehiculos = new Set<string>()
@@ -1314,17 +1390,17 @@ const ConformacionCuadrillaPage = () => {
     return deduped
   }, [activeTab, listDataForValidation])
   const totalPendientes = useMemo(() => {
-    const items = (pendientesTotalQuery.data ?? []).map(normalizeListRecord).filter((row) => !isRowEliminado(row) && row.confirmada !== true)
+    const items = (pendientesTotalQuery.data ?? [])
+      .map(normalizeListRecord)
+      .filter((row) => !isRowEliminado(row) && row.confirmada !== true && !isConfirmedInDbToday(row))
     return items.length
-  }, [pendientesTotalQuery.data])
+  }, [confirmedDbTodaySignatureSet, pendientesTotalQuery.data])
   const totalConfirmadas = useMemo(() => {
-    const items = (confirmadasTotalQuery.data ?? []).map(normalizeListRecord).filter((row) => row.confirmada === true)
+    const items = (confirmadasTotalQuery.data ?? [])
+      .map(normalizeListRecord)
+      .filter((row) => row.confirmada === true && isRecordFromTodayForConfirmadas(row, confirmadasFechaFiltro))
     return items.length
-  }, [confirmadasTotalQuery.data])
-  const totalEliminadas = useMemo(() => {
-    const items = (eliminadasTotalQuery.data ?? []).map(normalizeListRecord).filter((row) => isRowEliminado(row))
-    return items.length
-  }, [eliminadasTotalQuery.data])
+  }, [confirmadasFechaFiltro, confirmadasTotalQuery.data])
   const visibleListData = useMemo(() => {
     const query = listSearch.trim().toLowerCase()
     if (!query) return listData
@@ -1358,7 +1434,7 @@ const ConformacionCuadrillaPage = () => {
     const start = (page - 1) * pageSize
     return visibleListData.slice(start, start + pageSize)
   }, [visibleListData, page])
-  const totalGeneral = totalPendientes + totalConfirmadas + totalEliminadas
+  const totalGeneral = totalPendientes + totalConfirmadas
   const sucursalActivaLabel = sucursalActiva || selectedSucursalLabel || loginSucursalLabel || 'Sin sucursal'
   const fechaActivaLabel = useMemo(() => {
     if (selectedFechaFiltro === todayValue) return `${todayValue} (hoy)`
@@ -1397,6 +1473,7 @@ const ConformacionCuadrillaPage = () => {
 
   const resetDraft = () => {
     setEditingId(null)
+    setEditInitialSnapshot(null)
     setShowStrictValidation(false)
     setGridRows([createEmptyRow(session?.nombre, session?.idUsuario, sucursalActiva || selectedSucursalLabel || loginSucursalLabel)])
   }
@@ -1419,6 +1496,7 @@ const ConformacionCuadrillaPage = () => {
     setActiveDetailConfirmKey(key)
     setEditingId(idRegistro)
     setEditingLoadId(null)
+    setEditInitialSnapshot(buildEditAssignmentSnapshotFromRecord(normalizeListRecord(sourceRow)))
     setGridRows([preloadedRow])
   }
 
@@ -1439,6 +1517,12 @@ const ConformacionCuadrillaPage = () => {
       const detailRow = applyMandatoryRowRules(toEditableRow(detail))
       const mergedRow = baseRow ? mergeEditableRows(baseRow, detailRow) : detailRow
       setGridRows([mergedRow])
+      const detailSnapshot = buildEditAssignmentSnapshotFromRow(
+        mergedRow,
+        getRecordRutaId(detail) ?? editInitialSnapshot?.idRuta ?? null,
+        sucursalActiva
+      )
+      setEditInitialSnapshot(detailSnapshot)
     } catch (error) {
       setSubmitError(toApiErrorText(error, 'No se pudo refrescar el detalle de la cuadrilla.'))
     } finally {
@@ -1505,7 +1589,7 @@ const ConformacionCuadrillaPage = () => {
       render: (row) => {
         const selectionKey = getRecordSelectionKey(row)
         const isSelected = selectedConfirmKeys.includes(selectionKey)
-        const registroLabel = formatDateTime(row.fechaRegistro) || formatDate(row.fecha) || '-'
+        const registroLabel = formatDateTime(row.fechaRegistro ?? undefined) || formatDate(row.fecha ?? undefined) || '-'
         const tecnicoLabel = resolveTecnicoListLabel(row)
         const auxiliarLabel = toVisualLabel(row.auxiliar, 'Sin auxiliar')
         const vehiculoLabel = toVisualLabel(row.vehiculo, 'Sin vehiculo')
@@ -1525,7 +1609,7 @@ const ConformacionCuadrillaPage = () => {
                 disabled={rowDetailLoading}
                 className="border-sky-300 text-sky-700"
               >
-                {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver local'}
+                {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver cuadrilla'}
               </Button>
             </div>
             <p className="mt-2 break-words text-xl font-extrabold leading-tight text-slate-900">{tecnicoLabel}</p>
@@ -1603,10 +1687,65 @@ const ConformacionCuadrillaPage = () => {
   }
 
   const guardarConfirmadaMutation = useMutation({
-    mutationFn: ({ payload }: { payload: { filas: ConformacionCuadrillaInput[] }; confirmedKeys: string[] }) =>
-      guardarConformacionCuadrillaConfirmada(payload),
+    mutationFn: async ({
+      payload,
+    }: {
+      payload: { filas: ConformacionCuadrillaInput[] }
+      confirmedKeys: string[]
+    }) => {
+      const hasText = (value: unknown): boolean => typeof value === 'string' && value.trim().length > 0
+      const toTecnicoId = (value: unknown): number | null => {
+        const parsed = Number(value)
+        if (!Number.isFinite(parsed) || parsed <= 0) return null
+        return Math.trunc(parsed)
+      }
+
+      const detailCache = new Map<number, Promise<CatalogItem | null>>()
+      const resolveDetail = (idTecnico: number): Promise<CatalogItem | null> => {
+        const existing = detailCache.get(idTecnico)
+        if (existing) return existing
+        const req = fetchConformacionTecnicoDetalle(idTecnico, sucursalActiva || undefined)
+          .then((detail) => detail)
+          .catch(() => null)
+        detailCache.set(idTecnico, req)
+        return req
+      }
+
+      const enrichedRows = await Promise.all(
+        payload.filas.map(async (row) => {
+          const needsCuenta = !hasText(row.cuentaSf)
+          const needsSalesforce = !hasText(row.salesforce)
+          if (!needsCuenta && !needsSalesforce) return row
+
+          const tecnicoId = toTecnicoId(row.idTecnico)
+          if (!tecnicoId) return row
+          const detail = await resolveDetail(tecnicoId)
+          if (!detail) return row
+
+          const option = tecnicoById.get(String(tecnicoId))
+          const resolved = resolveTecnicoFields(detail, option)
+          return {
+            ...row,
+            cuentaSf: hasText(row.cuentaSf) ? row.cuentaSf : resolved.cuentaSf || row.cuentaSf,
+            salesforce: hasText(row.salesforce) ? row.salesforce : resolved.salesforce || row.salesforce,
+          }
+        })
+      )
+
+      const missingIndex = enrichedRows.findIndex((row) => !hasText(row.cuentaSf) || !hasText(row.salesforce))
+      if (missingIndex >= 0) {
+        throw new Error(
+          `Fila ${missingIndex + 1}: no se pudo resolver cuentaSf/salesforce del tecnico antes de confirmar.`
+        )
+      }
+
+      await guardarConformacionCuadrillaConfirmada({ filas: enrichedRows })
+    },
     onSuccess: async (_data, variables) => {
-      await finalizeDefinitiveSave(variables.confirmedKeys ?? [], 'Cuadrilla confirmada guardada')
+      await finalizeDefinitiveSave(
+        variables.confirmedKeys ?? [],
+        'Cuadrilla confirmada guardada'
+      )
     },
     onError: (err) => {
       setSuccess(null)
@@ -1654,7 +1793,9 @@ const ConformacionCuadrillaPage = () => {
 
   const preConfirmRequiredLabels: Record<string, string> = {
     vehiculo: 'vehiculo',
-    auxiliar: 'auxiliar',
+    digitador: 'digitador',
+    habilidad: 'habilidad',
+    grupo: 'grupo',
   }
   const formatPreConfirmMissingFields = (fields: string[]): string =>
     fields.map((field) => preConfirmRequiredLabels[field] ?? field).join(', ')
@@ -1662,10 +1803,12 @@ const ConformacionCuadrillaPage = () => {
   const getPreConfirmMissingFields = (row: EditableRow): string[] => {
     const missing: string[] = []
     if (!String(row.vehiculo ?? '').trim()) missing.push('vehiculo')
+    if (!String(row.grupo ?? '').trim()) missing.push('grupo')
+    if (!String(normalizeHabilidadValue(row.habilidad ?? '')).trim()) missing.push('habilidad')
 
-    const hasAuxiliarId = parseNumber(row.idTecnicoAuxiliar) !== null
-    const hasAuxiliarLabel = String(row.auxiliar ?? '').trim() !== ''
-    if (!hasAuxiliarId && !hasAuxiliarLabel) missing.push('auxiliar')
+    const hasDigitadorId = parseNumber(row.idUsuarioDigitador) !== null
+    const hasDigitadorLabel = String(row.digitador ?? '').trim() !== ''
+    if (!hasDigitadorId && !hasDigitadorLabel) missing.push('digitador')
     return missing
   }
 
@@ -1682,11 +1825,16 @@ const ConformacionCuadrillaPage = () => {
     return false
   }
 
-  const findVehiculoConflictRecord = (row: EditableRow): ConformacionCuadrillaRecord | null => {
+  const findVehiculoConflictRecord = (
+    row: EditableRow,
+    options?: { ignoreSelectionKey?: string }
+  ): ConformacionCuadrillaRecord | null => {
     const vehiculoKey = String(row.vehiculo ?? '').trim().toLowerCase()
     if (!vehiculoKey) return null
     return (
       listDataForValidation.find((record) => {
+        const recordKey = getRecordSelectionKey(record)
+        if (options?.ignoreSelectionKey && recordKey === options.ignoreSelectionKey) return false
         const recordVehiculoKey = String(record.vehiculo ?? '').trim().toLowerCase()
         if (!recordVehiculoKey || recordVehiculoKey !== vehiculoKey) return false
         if (isSameRecordAsDraftRow(record, row)) return false
@@ -1695,11 +1843,16 @@ const ConformacionCuadrillaPage = () => {
     )
   }
 
-  const findAuxiliarConflictRecord = (row: EditableRow): ConformacionCuadrillaRecord | null => {
+  const findAuxiliarConflictRecord = (
+    row: EditableRow,
+    options?: { ignoreSelectionKey?: string }
+  ): ConformacionCuadrillaRecord | null => {
     const auxiliarId = String(row.idTecnicoAuxiliar ?? '').trim()
     if (!auxiliarId) return null
     return (
       listDataForValidation.find((record) => {
+        const recordKey = getRecordSelectionKey(record)
+        if (options?.ignoreSelectionKey && recordKey === options.ignoreSelectionKey) return false
         const recordAuxiliarId = String(record.idTecnicoAuxiliar ?? '').trim()
         if (!recordAuxiliarId || recordAuxiliarId !== auxiliarId) return false
         if (isSameRecordAsDraftRow(record, row)) return false
@@ -1723,17 +1876,29 @@ const ConformacionCuadrillaPage = () => {
     })
   }
 
-  const findFirstVehiculoOccupiedIndex = (rows: EditableRow[], reassignments: AssignmentTransfer[] = []): number => {
-    return rows.findIndex((row) => {
-      const conflict = findVehiculoConflictRecord(row)
+  const findFirstVehiculoOccupiedIndex = (
+    rows: EditableRow[],
+    reassignments: AssignmentTransfer[] = [],
+    rowSelectionKeys?: string[]
+  ): number => {
+    return rows.findIndex((row, index) => {
+      const conflict = findVehiculoConflictRecord(row, {
+        ignoreSelectionKey: rowSelectionKeys?.[index],
+      })
       if (!conflict) return false
       return !isReassignmentApproved('vehiculo', String(row.vehiculo ?? ''), conflict, reassignments)
     })
   }
 
-  const findFirstAuxiliarOccupiedIndex = (rows: EditableRow[], reassignments: AssignmentTransfer[] = []): number => {
-    return rows.findIndex((row) => {
-      const conflict = findAuxiliarConflictRecord(row)
+  const findFirstAuxiliarOccupiedIndex = (
+    rows: EditableRow[],
+    reassignments: AssignmentTransfer[] = [],
+    rowSelectionKeys?: string[]
+  ): number => {
+    return rows.findIndex((row, index) => {
+      const conflict = findAuxiliarConflictRecord(row, {
+        ignoreSelectionKey: rowSelectionKeys?.[index],
+      })
       if (!conflict) return false
       return !isReassignmentApproved('auxiliar', String(row.idTecnicoAuxiliar ?? ''), conflict, reassignments)
     })
@@ -1863,45 +2028,20 @@ const ConformacionCuadrillaPage = () => {
 
   const buildUpdatePayloadFromRow = (row: EditableRow, currentUserId: number, currentSucursal: string): ConformacionCuadrillaInput => {
     const normalizedRow = applyMandatoryRowRules(row)
+    const supervisorId = parseNumber(normalizedRow.idUsuarioSupervisor)
+    const registraId = parseNumber(normalizedRow.idUsuarioRegistra)
     return {
       ...buildPayloadRow(normalizedRow),
-      fecha: selectedFechaFiltro || toISODate(normalizedRow.fecha) || todayISO(),
+      fecha: toISODate(normalizedRow.fecha) || selectedFechaFiltro || todayISO(),
       estado: mapEstadoForBackend(normalizedRow.estado),
       actividad: cleanString(normalizedRow.actividad),
       idTecnico: parseNumber(normalizedRow.idTecnico) ?? undefined,
-      // El backend espera el id del usuario autenticado para el supervisor del registro.
-      idUsuarioSupervisor: Number(currentUserId),
+      idUsuarioSupervisor: supervisorId ?? Number(currentUserId),
       sucursal: currentSucursal,
-      idUsuarioRegistra: Number(currentUserId),
+      idUsuarioRegistra: registraId ?? Number(currentUserId),
       idUsuarioDigitador: parseNumber(normalizedRow.idUsuarioDigitador) ?? undefined,
       idTecnicoAuxiliar: parseNumber(normalizedRow.idTecnicoAuxiliar) ?? undefined,
     }
-  }
-
-  const buildSessionPreviewRecord = (
-    baseRecord: ConformacionCuadrillaRecord,
-    row: EditableRow,
-    currentUserId: number,
-    currentSucursal: string
-  ): ConformacionCuadrillaRecord => {
-    const payload = buildUpdatePayloadFromRow(row, currentUserId, currentSucursal)
-    return normalizeListRecord({
-      ...baseRecord,
-      ...payload,
-      tecnico: row.tecnico,
-      auxiliar: row.auxiliar,
-      digitador: row.digitador,
-      supervisorACargo: row.supervisorACargo || session?.nombre || '',
-      grupo: row.grupo,
-      vehiculo: row.vehiculo,
-      almacen: row.almacen,
-      cuentaSf: row.cuentaSf,
-      salesforce: row.salesforce,
-      grupoDigitacion: row.grupoDigitacion,
-      habilidad: row.habilidad,
-      observacion: row.observacion,
-      sucursal: currentSucursal || row.sucursal || baseRecord.sucursal || '',
-    })
   }
 
   const buildReleasePayloadFromRecord = (transfer: AssignmentTransfer): ConformacionCuadrillaInput => {
@@ -1911,7 +2051,7 @@ const ConformacionCuadrillaPage = () => {
     const sourceUserId = parseNumber(sourceRow.idUsuarioRegistra) ?? parseNumber(currentUserRegistraId)
     const payload: ConformacionCuadrillaInput = {
       ...buildPayloadRow(sourceRow),
-      fecha: selectedFechaFiltro || toISODate(sourceRow.fecha) || todayISO(),
+      fecha: toISODate(sourceRow.fecha) || selectedFechaFiltro || todayISO(),
       estado: mapEstadoForBackend(sourceRow.estado),
       actividad: cleanString(sourceRow.actividad),
       idTecnico: parseNumber(sourceRow.idTecnico) ?? undefined,
@@ -1995,8 +2135,13 @@ const ConformacionCuadrillaPage = () => {
     const numericValue = parseNumber(value)
     const normalizedValue = numericValue !== null ? String(numericValue) : ''
     const option = tecnicoById.get(normalizedValue)
+    const currentAuxiliarId = String(gridRows[index]?.idTecnicoAuxiliar ?? '').trim()
     // Prevent assigning the same tecnico to another cuadrilla (check grid and list)
     if (normalizedValue) {
+      if (currentAuxiliarId && currentAuxiliarId === normalizedValue) {
+        setSubmitError('El tecnico no puede ser el mismo que el auxiliar.')
+        return
+      }
       const inGrid = gridRows.some((r, i) => i !== index && String(r.idTecnico ?? '').trim() === normalizedValue)
       const currentGrupo = String(gridRows[index]?.grupo ?? '').trim().toLowerCase()
       const inList = listData.some((r) => String(r.idTecnico ?? '').trim() === normalizedValue && String(r.grupo ?? '').trim().toLowerCase() !== currentGrupo)
@@ -2070,10 +2215,16 @@ const ConformacionCuadrillaPage = () => {
     const numericValue = parseNumber(value)
     const normalizedValue = numericValue !== null ? String(numericValue) : ''
     const option = auxiliarById.get(normalizedValue)
+    const currentTecnicoId = String(gridRows[index]?.idTecnico ?? '').trim()
 
     if (!normalizedValue) {
       clearApprovedReassignmentsByField('auxiliar')
       updateRow(index, (row) => ({ ...row, idTecnicoAuxiliar: '', auxiliar: '' }))
+      return
+    }
+
+    if (currentTecnicoId && currentTecnicoId === normalizedValue) {
+      setSubmitError('El auxiliar no puede ser el mismo que el tecnico.')
       return
     }
 
@@ -2276,10 +2427,13 @@ const ConformacionCuadrillaPage = () => {
       return
     }
 
-    await finalizeDefinitiveSave(pendingConfirmation.confirmedKeys, 'Cuadrilla confirmada actualizada')
+    await finalizeDefinitiveSave(
+      pendingConfirmation.confirmedKeys,
+      'Cuadrilla confirmada actualizada'
+    )
   }
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!canAsignarTecnicoGrupo) {
       setSubmitError('No tienes permiso para asignar tecnico a grupo (tsm_ConformacionCuadrillas).')
       return
@@ -2319,19 +2473,19 @@ const ConformacionCuadrillaPage = () => {
       return
     }
 
-    const currentUserId = parseNumber(currentUserRegistraId)
-    if (currentUserId === null) {
-      setSubmitError('No se pudo resolver idUsuarioRegistra del usuario actual.')
-      return
-    }
     if (!sucursalActiva) {
       setSubmitError('Selecciona una sucursal para continuar.')
       return
     }
 
     const rowsToSubmit = gridRows.map(applyMandatoryRowRules)
+    const draftRow = rowsToSubmit[0]
+    if (!draftRow) {
+      setSubmitError('No se encontro una fila para guardar preliminar en la sesion.')
+      return
+    }
     const activeReassignments = approvedReassignments.filter((item) => {
-      const currentRow = rowsToSubmit[0]
+      const currentRow = draftRow
       if (!currentRow) return false
       if (editingId !== null && item.sourceId === editingId) return false
       if (item.field === 'vehiculo') {
@@ -2345,8 +2499,7 @@ const ConformacionCuadrillaPage = () => {
       setSubmitError(`Fila ${firstVehiculoOccupiedIndex + 1}: el vehiculo ya esta asignado a otra cuadrilla.`)
       return
     }
-    const isUpdateOperation = modalMode === 'edit' && Boolean(editingId)
-    if (isUpdateOperation && isActiveDetailDateBeforeToday) {
+    if (modalMode === 'edit' && isActiveDetailDateBeforeToday) {
       setSubmitError(pastDateEditError)
       return
     }
@@ -2356,86 +2509,160 @@ const ConformacionCuadrillaPage = () => {
       return
     }
 
-    if (!isUpdateOperation) {
-      const missingPreConfirmIndex = rowsToSubmit.findIndex((row) => getPreConfirmMissingFields(row).length > 0)
-      if (missingPreConfirmIndex >= 0) {
-        const missing = getPreConfirmMissingFields(rowsToSubmit[missingPreConfirmIndex] ?? createEmptyRow())
-        setSubmitError(
-          `Fila ${missingPreConfirmIndex + 1}: para confirmar el pre-marcado faltan (${formatPreConfirmMissingFields(missing)}).`
-        )
-        return
-      }
-    }
-
-    const payloadRows = rowsToSubmit.map((row) => buildUpdatePayloadFromRow(row, currentUserId, sucursalActiva))
-    const filaPayload = payloadRows[0]
-    const guardarPayload = { filas: [filaPayload] }
-
-    if (cuadrillaDebugEnabled) {
-      console.info('[CUADRILLA][GUARDAR]', {
-        operation: isUpdateOperation ? 'update' : 'create',
-        filas: 1,
-      })
-    }
-
-    if (isUpdateOperation && editingId !== null) {
-      const fallbackRecordById = listDataForValidation.find((record) => getRecordRealId(record) === editingId)
-      const targetKey = activeDetailConfirmKey ?? (fallbackRecordById ? getRecordSelectionKey(fallbackRecordById) : null)
-      const draftRow = rowsToSubmit[0]
-      if (!targetKey || !draftRow) {
-        setSubmitError('No se pudo resolver la cuadrilla para guardar cambios preliminares.')
-        return
-      }
-
-      const targetBaseRecord =
-        sessionDraftByKey[targetKey] ?? listDataForValidation.find((record) => getRecordSelectionKey(record) === targetKey)
-      if (!targetBaseRecord) {
-        setSubmitError('No se encontro la cuadrilla en el listado para aplicar cambios preliminares.')
-        return
-      }
-
-      setSessionDraftByKey((current) => {
-        const next = { ...current }
-        next[targetKey] = buildSessionPreviewRecord(targetBaseRecord, draftRow, currentUserId, sucursalActiva)
-
-        for (const reassignment of activeReassignments) {
-          const sourceKey = getRecordSelectionKey(reassignment.sourceRecord)
-          const sourceBaseRecord = next[sourceKey] ?? listDataForValidation.find((record) => getRecordSelectionKey(record) === sourceKey) ?? reassignment.sourceRecord
-          const sourceEditable = applyMandatoryRowRules(toEditableRow(sourceBaseRecord))
-          if (reassignment.field === 'vehiculo') {
-            sourceEditable.vehiculo = ''
-          } else {
-            sourceEditable.idTecnicoAuxiliar = ''
-            sourceEditable.auxiliar = ''
-          }
-          const sourceSucursal = toSucursalActiva(sourceEditable.sucursal || sucursalActiva)
-          next[sourceKey] = buildSessionPreviewRecord(sourceBaseRecord, sourceEditable, currentUserId, sourceSucursal)
-        }
-        return next
-      })
-
-      setSessionReassignmentsByKey((current) => {
-        const next = { ...current }
-        if (activeReassignments.length) {
-          next[targetKey] = activeReassignments
-        } else {
-          delete next[targetKey]
-        }
-        return next
-      })
-
-      setApprovedReassignments([])
-      setPendingReassignmentPrompt(null)
-      setModalOpen(false)
-      setModalMode('view')
-      setActiveDetailConfirmKey(null)
-      resetDraft()
-      setSuccess('Cambios guardados en sesion. Selecciona la cuadrilla y usa "Subir marcado de hoy" para guardar definitivo.')
+    const targetKey = activeDetailConfirmKey
+    if (!targetKey) {
+      setSubmitError('No se pudo resolver la cuadrilla para guardar cambios preliminares en sesion.')
       return
     }
 
-    const confirmKey = activeDetailConfirmKey ?? null
-    openConfirmationModal(guardarPayload, confirmKey ? [confirmKey] : [], activeReassignments)
+    const targetBaseRecord =
+      sessionDraftByKey[targetKey] ??
+      listDataForValidation.find((record) => getRecordSelectionKey(record) === targetKey) ??
+      listData.find((record) => getRecordSelectionKey(record) === targetKey)
+    if (!targetBaseRecord) {
+      setSubmitError('No se encontro la cuadrilla en el listado para aplicar cambios preliminares.')
+      return
+    }
+
+    const normalizedBaseRecord = normalizeListRecord(targetBaseRecord)
+    const normalizedDraftRecord = normalizeListRecord({
+      ...normalizedBaseRecord,
+      fecha: toISODate(draftRow.fecha) || normalizedBaseRecord.fecha || todayISO(),
+      estado: normalizeEstadoValue(draftRow.estado),
+      actividad: cleanString(draftRow.actividad),
+      idTecnico: parseNumber(draftRow.idTecnico) ?? undefined,
+      cuentaSf: cleanString(draftRow.cuentaSf),
+      salesforce: cleanString(draftRow.salesforce),
+      habilidad: normalizeHabilidadValue(draftRow.habilidad),
+      vehiculo: cleanString(draftRow.vehiculo),
+      grupo: cleanString(draftRow.grupo),
+      almacen: cleanString(draftRow.almacen),
+      grupoDigitacion: cleanString(draftRow.grupoDigitacion),
+      idUsuarioDigitador: parseNumber(draftRow.idUsuarioDigitador) ?? undefined,
+      digitador: cleanString(draftRow.digitador),
+      tecnico: cleanString(draftRow.tecnico),
+      idTecnicoAuxiliar: parseNumber(draftRow.idTecnicoAuxiliar) ?? undefined,
+      auxiliar: cleanString(draftRow.auxiliar),
+      idUsuarioSupervisor: parseNumber(draftRow.idUsuarioSupervisor) ?? undefined,
+      supervisorACargo: cleanString(draftRow.supervisorACargo),
+      sucursal: cleanString(sucursalActiva || draftRow.sucursal || normalizedBaseRecord.sucursal || ''),
+      observacion: cleanString(draftRow.observacion),
+      idUsuarioRegistra:
+        parseNumber(draftRow.idUsuarioRegistra) ??
+        parseNumber(draftRow.idUsuarioSupervisor) ??
+        toOptionalNumber(normalizedBaseRecord.idUsuarioRegistra),
+    })
+    const idRutaRelacion = getRecordRutaId(normalizedDraftRecord) ?? getRecordRutaId(normalizedBaseRecord)
+    const idTecnicoAuxiliarRelacion = parseNumber(draftRow.idTecnicoAuxiliar)
+    const idUsuarioDigitadorRelacion = parseNumber(draftRow.idUsuarioDigitador)
+    const auxiliarRelacion = cleanString(draftRow.auxiliar)
+    const digitadorRelacion = cleanString(draftRow.digitador)
+    const hasRelacionValues =
+      idTecnicoAuxiliarRelacion !== null ||
+      auxiliarRelacion !== '' ||
+      idUsuarioDigitadorRelacion !== null ||
+      digitadorRelacion !== ''
+    const recordsByKey = new Map(listDataForValidation.map((record) => [getRecordSelectionKey(record), record]))
+
+    if (activeTab === 'confirmadas') {
+      if (editingId === null) {
+        setSubmitError('No se pudo resolver el id de la cuadrilla confirmada para actualizar.')
+        return
+      }
+      const currentUserId = parseNumber(currentUserRegistraId)
+      if (currentUserId === null) {
+        setSubmitError('No se pudo resolver idUsuarioRegistra del usuario actual para actualizar.')
+        return
+      }
+
+      const updatePayload = buildUpdatePayloadFromRow(draftRow, currentUserId, sucursalActiva)
+      setIsResolvingReassignments(true)
+      try {
+        if (activeReassignments.length) {
+          await runApprovedReassignments(activeReassignments)
+        }
+        await updateConformacionCuadrilla(editingId, updatePayload, { target: 'dbordenres' })
+      } catch (error) {
+        setSubmitError(toApiErrorText(error, 'No se pudo actualizar la cuadrilla confirmada en BDControlOrdenes.'))
+        setIsResolvingReassignments(false)
+        return
+      } finally {
+        setIsResolvingReassignments(false)
+      }
+
+      await finalizeDefinitiveSave(
+        [targetKey],
+        'Cuadrilla confirmada actualizada'
+      )
+      return
+    }
+
+    if (hasRelacionValues) {
+      if (idRutaRelacion === null) {
+        setSubmitError('No se pudo resolver idRuta para guardar auxiliar/digitador en relacion_cuadrillas.')
+        return
+      }
+
+      const relationPayload: ConformacionCuadrillaRelacionPayload = {
+        idRuta: idRutaRelacion,
+        idTecnicoAuxiliar: idTecnicoAuxiliarRelacion,
+        auxiliar: auxiliarRelacion || null,
+        idUsuarioDigitador: idUsuarioDigitadorRelacion,
+        digitador: digitadorRelacion || null,
+        sucursal: cleanString(sucursalActiva || draftRow.sucursal || normalizedBaseRecord.sucursal || '') || null,
+        activo: true,
+      }
+
+      try {
+        await guardarRelacionCuadrilla(relationPayload)
+      } catch (error) {
+        setSubmitError(toApiErrorText(error, 'No se pudo guardar auxiliar/digitador en relacion_cuadrillas.'))
+        return
+      }
+    }
+
+    setSessionDraftByKey((current) => {
+      const next = { ...current, [targetKey]: normalizedDraftRecord }
+      for (const reassignment of activeReassignments) {
+        const sourceKey = getRecordSelectionKey(reassignment.sourceRecord)
+        const sourceRecord = next[sourceKey] ?? current[sourceKey] ?? recordsByKey.get(sourceKey) ?? reassignment.sourceRecord
+        const normalizedSource = normalizeListRecord(sourceRecord)
+        next[sourceKey] = normalizeListRecord(
+          reassignment.field === 'vehiculo'
+            ? { ...normalizedSource, vehiculo: '' }
+            : { ...normalizedSource, idTecnicoAuxiliar: undefined, auxiliar: '' }
+        )
+      }
+      return next
+    })
+    setSessionReassignmentsByKey((current) => {
+      const next = { ...current }
+      if (activeReassignments.length) {
+        next[targetKey] = activeReassignments
+      } else {
+        delete next[targetKey]
+      }
+      return next
+    })
+    setSelectedConfirmKeys((current) => {
+      const nextIsActivo = normalizeEstadoValue(draftRow.estado) === 'ACTIVO'
+      if (nextIsActivo) {
+        if (current.includes(targetKey)) return current
+        return [...current, targetKey]
+      }
+      return current.filter((key) => key !== targetKey)
+    })
+
+    setApprovedReassignments([])
+    setPendingReassignmentPrompt(null)
+    setPendingConfirmation(null)
+    setModalOpen(false)
+    setModalMode('view')
+    setActiveDetailConfirmKey(null)
+    setEditInitialSnapshot(null)
+    setSubmitError(null)
+    setSuccess('Guardado preliminar en sesion.')
+    resetDraft()
   }
 
   const isSaving = guardarConfirmadaMutation.isPending || isResolvingReassignments
@@ -2469,6 +2696,7 @@ const ConformacionCuadrillaPage = () => {
 
     const selectedRows = selectedRowsForConfirm
     const selectedReassignments = selectedRows.flatMap((row) => sessionReassignmentsByKey[getRecordSelectionKey(row)] ?? [])
+    const selectedRowKeys = selectedRows.map(getRecordSelectionKey)
 
     const tecnicoIdByLabel = new Map(
       tecnicoOptions.map((option) => [option.label.trim().toLowerCase(), option.value])
@@ -2499,12 +2727,12 @@ const ConformacionCuadrillaPage = () => {
       }
       return
     }
-    const firstVehiculoOccupiedIndex = findFirstVehiculoOccupiedIndex(rows, selectedReassignments)
+    const firstVehiculoOccupiedIndex = findFirstVehiculoOccupiedIndex(rows, selectedReassignments, selectedRowKeys)
     if (firstVehiculoOccupiedIndex >= 0) {
       setSubmitError(`Fila ${firstVehiculoOccupiedIndex + 1}: el vehiculo ya esta asignado a otra cuadrilla.`)
       return
     }
-    const firstAuxiliarOccupiedIndex = findFirstAuxiliarOccupiedIndex(rows, selectedReassignments)
+    const firstAuxiliarOccupiedIndex = findFirstAuxiliarOccupiedIndex(rows, selectedReassignments, selectedRowKeys)
     if (firstAuxiliarOccupiedIndex >= 0) {
       setSubmitError(`Fila ${firstAuxiliarOccupiedIndex + 1}: el auxiliar ya esta asignado a otra cuadrilla.`)
       return
@@ -2540,10 +2768,29 @@ const ConformacionCuadrillaPage = () => {
     return toApiErrorText(listQuery.error, 'No se pudo cargar el listado.')
   }, [listQuery.error, listQuery.isError])
   const totalsErrorMessage = useMemo(() => {
-    const firstError = pendientesTotalQuery.error ?? confirmadasTotalQuery.error ?? eliminadasTotalQuery.error
+    const firstError = pendientesTotalQuery.error ?? confirmadasTotalQuery.error
     if (!firstError) return null
     return toApiErrorText(firstError, 'No se pudo cargar uno o mas totales del tablero.')
-  }, [confirmadasTotalQuery.error, eliminadasTotalQuery.error, pendientesTotalQuery.error])
+  }, [confirmadasTotalQuery.error, pendientesTotalQuery.error])
+  const emptyListMessage = useMemo(() => {
+    const queryText = listSearch.trim()
+    const fechaLabel = activeTab === 'confirmadas' ? confirmadasFechaFiltro : selectedFechaFiltro ?? todayValue
+
+    if (activeTab === 'confirmadas') {
+      if (!sucursalActiva) {
+        return 'Selecciona una sucursal para ver cuadrillas confirmadas de BDControlOrdenes.'
+      }
+      if (queryText) {
+        return `No hay cuadrillas confirmadas que coincidan con "${queryText}".`
+      }
+      return `No hay cuadrillas confirmadas en BDControlOrdenes para ${sucursalActivaLabel} en fecha ${fechaLabel}.`
+    }
+
+    if (queryText) {
+      return `No hay cuadrillas pendientes que coincidan con "${queryText}".`
+    }
+    return `No hay cuadrillas pendientes para ${sucursalActivaLabel} en fecha ${fechaLabel}.`
+  }, [activeTab, confirmadasFechaFiltro, listSearch, selectedFechaFiltro, sucursalActiva, sucursalActivaLabel, todayValue])
   const hasPendingReassignments = Boolean(pendingConfirmation?.reassignments?.length)
 
   if (!canViewCuadrillas) {
@@ -2585,7 +2832,7 @@ const ConformacionCuadrillaPage = () => {
         </Button>
       </div>
       {showOverviewPanel ? (
-        <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-6">
+        <div className="grid grid-cols-2 gap-2 rounded-xl border border-slate-200 bg-white p-3 sm:gap-3 sm:p-4 lg:grid-cols-3 xl:grid-cols-5">
           <div className="min-w-0 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
             <p className="text-[11px] font-semibold text-amber-700">Pendientes</p>
             <p className="text-lg font-bold text-amber-900">{pendientesTotalQuery.isLoading ? '...' : totalPendientes}</p>
@@ -2596,14 +2843,10 @@ const ConformacionCuadrillaPage = () => {
               {confirmadasTotalQuery.isLoading ? '...' : totalConfirmadas}
             </p>
           </div>
-          <div className="min-w-0 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2">
-            <p className="text-[11px] font-semibold text-rose-700">Eliminadas</p>
-            <p className="text-lg font-bold text-rose-900">{eliminadasTotalQuery.isLoading ? '...' : totalEliminadas}</p>
-          </div>
           <div className="min-w-0 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2">
             <p className="text-[11px] font-semibold text-sky-700">Total general</p>
             <p className="text-lg font-bold text-sky-900">
-              {pendientesTotalQuery.isLoading || confirmadasTotalQuery.isLoading || eliminadasTotalQuery.isLoading ? '...' : totalGeneral}
+              {pendientesTotalQuery.isLoading || confirmadasTotalQuery.isLoading ? '...' : totalGeneral}
             </p>
           </div>
           <div className="col-span-2 min-w-0 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 md:col-span-1 xl:col-span-1">
@@ -2724,7 +2967,7 @@ const ConformacionCuadrillaPage = () => {
             <div className="space-y-3 md:hidden">
               {pagedVisibleData.length === 0 ? (
                 <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-center text-sm text-slate-500">
-                  No hay registros disponibles.
+                  {emptyListMessage}
                 </div>
               ) : (
                 pagedVisibleData.map((row, index) => {
@@ -2732,7 +2975,7 @@ const ConformacionCuadrillaPage = () => {
                   const isSelected = selectedConfirmKeys.includes(selectionKey)
                   const rowDetailLoading = isRowDetailLoading(row)
                   const hasRealId = getRecordRealId(row) !== null
-                  const registroLabel = formatDateTime(row.fechaRegistro) || formatDate(row.fecha)
+                  const registroLabel = formatDateTime(row.fechaRegistro ?? undefined) || formatDate(row.fecha ?? undefined)
                   const tecnicoLabel = resolveTecnicoListLabel(row)
                   const auxiliarLabel = toVisualLabel(row.auxiliar, 'Sin auxiliar')
                   const vehiculoLabel = toVisualLabel(row.vehiculo, 'Sin vehiculo')
@@ -2753,7 +2996,7 @@ const ConformacionCuadrillaPage = () => {
                           disabled={rowDetailLoading}
                           className="border-sky-300 text-sky-700"
                         >
-                          {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver local'}
+                          {rowDetailLoading ? 'Cargando...' : hasRealId ? 'Ver detalle' : 'Ver cuadrilla'}
                         </Button>
                       </div>
                       <div className="mt-4 space-y-1 text-sm text-slate-700">
@@ -2782,7 +3025,7 @@ const ConformacionCuadrillaPage = () => {
               <Table
                 columns={columns}
                 data={pagedVisibleData}
-                emptyLabel="No hay registros disponibles."
+                emptyLabel={emptyListMessage}
                 variant="row-block"
                 desktopMinWidthClass="min-w-[980px]"
                 desktopScrollMode="always"
@@ -2817,7 +3060,7 @@ const ConformacionCuadrillaPage = () => {
                 <p className="mt-0.5 text-xs text-slate-500">
                   {isViewMode
                     ? activeTab === 'general'
-                      ? 'Vista desde listado. Puedes subir marcado de hoy o editar.'
+                      ? 'Vista desde listado. Puedes ajustar preliminar de sesion o editar.'
                       : activeTab === 'confirmadas'
                         ? 'Vista desde listado. Puedes editar esta cuadrilla confirmada (BDControlOrdenes).'
                         : 'Vista desde listado. En esta pestana solo esta disponible modo lectura.'
@@ -3232,17 +3475,17 @@ const ConformacionCuadrillaPage = () => {
             {showStrictValidation && !isLocalViewMode && hasIssues ? (
               <span className="text-xs text-rose-500 sm:mr-auto">Hay filas con errores.</span>
             ) : null}
-            <Button type="button" onClick={handleSubmit} disabled={isSaving || !canAsignarTecnicoGrupo || !sucursalActiva} className="w-full sm:w-auto">
-              {isSaving
-                ? 'Guardando...'
-                : !canAsignarTecnicoGrupo
-                  ? 'Sin permiso para asignar'
-                  : modalMode === 'edit'
-                    ? editingId
-                      ? 'Actualizar cuadrilla'
-                      : 'Subir marcado de hoy'
-                    : 'Subir marcado de hoy'}
-            </Button>
+            {activeTab === 'confirmadas' && isViewMode ? null : (
+              <Button type="button" onClick={handleSubmit} disabled={isSaving || !canAsignarTecnicoGrupo || !sucursalActiva} className="w-full sm:w-auto">
+                {isSaving
+                  ? 'Guardando...'
+                  : !canAsignarTecnicoGrupo
+                    ? 'Sin permiso para asignar'
+                    : activeTab === 'confirmadas'
+                      ? 'Guardar edicion'
+                      : 'Guardar preliminar'}
+              </Button>
+            )}
           </div>
         </div>
             </div>
