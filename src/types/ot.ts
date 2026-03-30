@@ -55,6 +55,7 @@ export interface ListaOtParams {
   estado?: string
   estados?: string[]
   tecnico?: string
+  idUsuario?: number
   rol?: string
 }
 

@@ -71,7 +71,16 @@ const unwrapData = (payload: unknown): unknown => {
 const mapOtSummary = (row: UnknownRecord): OtSummary => {
   const id = readNumber(row, ['id', 'Id', 'idVenta', 'Id_Venta', 'idOT', 'IdOT']) ?? 0
   const codigo = readString(row, ['codigo', 'Codigo', 'ordenTrabajo', 'OrdenTrabajo', 'numeroOrden', 'NumeroOrden'])
-  const fecha = readString(row, ['fecha', 'Fecha', 'fechaEjecucion', 'Fecha_Ejecucion', 'FechaEjecucion'])
+  const fecha = readString(row, [
+    'inicio_agendado',
+    'Inicio_Agendado',
+    'InicioAgendado',
+    'fecha',
+    'Fecha',
+    'fechaEjecucion',
+    'Fecha_Ejecucion',
+    'FechaEjecucion',
+  ])
   const cliente = readString(row, ['cliente', 'Cliente', 'nombreCliente', 'NombreCliente'])
   const tecnico = readString(row, ['tecnico', 'Tecnico', 'nombreUsuario', 'NombreUsuario', 'usuario', 'Usuario'])
   const estado = readString(row, ['estado', 'Estado', 'estadoOt', 'Estado_OT'])
@@ -158,6 +167,9 @@ const buildListaOtQuery = (params: ListaOtParams): string => {
   if (params.tecnico?.trim()) {
     searchParams.set('tecnico', params.tecnico.trim())
   }
+  if (typeof params.idUsuario === 'number' && Number.isFinite(params.idUsuario) && params.idUsuario > 0) {
+    searchParams.set('idUsuario', String(params.idUsuario))
+  }
 
   const hasSessionToken = Boolean(getSessionStorage()?.sessionToken)
   if (!hasSessionToken && params.rol?.trim()) {
@@ -173,6 +185,53 @@ export const fetchListaOt = async (params: ListaOtParams): Promise<OtSummary[]> 
   const { data } = await api.get(endpoint)
   const rows = normalizeArrayResponse<UnknownRecord>(data)
   return rows.map(mapOtSummary)
+}
+
+export const fetchSupervisorUltimoEstadoDia = async (params: {
+  fecha: string
+  idUsuario?: number
+  tecnico?: string
+  rol?: string
+}): Promise<OtSummary[]> => {
+  try {
+    return await fetchListaOt({
+      fecha: params.fecha,
+      tecnico: params.tecnico,
+      idUsuario: params.idUsuario,
+      rol: params.rol,
+    })
+  } catch (listaOtError) {
+    // Fallback legado por compatibilidad con entornos antiguos.
+    const queryParams: Record<string, string | number> = { fecha: params.fecha }
+    if (typeof params.idUsuario === 'number' && Number.isFinite(params.idUsuario) && params.idUsuario > 0) {
+      queryParams.idUsuario = params.idUsuario
+    }
+    if (typeof params.tecnico === 'string' && params.tecnico.trim()) {
+      queryParams.tecnico = params.tecnico.trim()
+    }
+
+    const endpoints = [
+      '/supervisor/spy_Ultimo_Estado_Dia_BO_CITA_MAKIRO',
+      '/ot/spy_Ultimo_Estado_Dia_BO_CITA_MAKIRO',
+      '/spy_Ultimo_Estado_Dia_BO_CITA_MAKIRO',
+    ]
+
+    for (const endpoint of endpoints) {
+      try {
+        const { data } = await api.get(endpoint, { params: queryParams })
+        const rows = normalizeArrayResponse<UnknownRecord>(data)
+        return rows.map(mapOtSummary)
+      } catch (error) {
+        const status = (error as { response?: { status?: number } })?.response?.status
+        if (status === 404 || status === 405 || status === 500) {
+          continue
+        }
+        throw error
+      }
+    }
+
+    throw listaOtError
+  }
 }
 
 export const fetchOtDetail = async (id: number): Promise<OtDetail> => {
@@ -263,5 +322,191 @@ export const createOt = async (payload: OtCreatePayload): Promise<OtCreateResult
   return {
     idVenta,
     ordenTrabajo,
+  }
+}
+
+const parseBooleanLike = (value: unknown): boolean | null => {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['1', 'true', 'si', 's', 'yes', 'y'].includes(normalized)) return true
+    if (['0', 'false', 'no', 'n'].includes(normalized)) return false
+  }
+  return null
+}
+
+const parseExistenceFromString = (value: string): boolean | null => {
+  const normalized = value.trim().toLowerCase()
+  if (!normalized) return null
+
+  if (['true', 'si', 'sí', 'yes', 'y'].includes(normalized)) return true
+  if (['false', 'no', 'n'].includes(normalized)) return false
+  if (/^\d+$/.test(normalized)) return Number(normalized) > 0
+
+  if (normalized.includes('no existe') || normalized.includes('sin registro') || normalized.includes('ningun registro')) return false
+  if (normalized.includes('existe') || normalized.includes('registrado') || normalized.includes('encontrado')) return true
+
+  const numericMatch = normalized.match(/\b\d+\b/)
+  if (numericMatch && (normalized.includes('venta') || normalized.includes('detalle') || normalized.includes('registro'))) {
+    return Number(numericMatch[0]) > 0
+  }
+
+  return null
+}
+
+const resolveVentaExistsDeep = (payload: unknown): boolean | null => {
+  if (payload === undefined || payload === null) return null
+
+  if (typeof payload === 'number') return payload > 0
+  if (typeof payload === 'boolean') return payload
+  if (typeof payload === 'string') return parseExistenceFromString(payload)
+
+  const primitiveFlag = parseBooleanLike(payload)
+  if (primitiveFlag !== null) return primitiveFlag
+
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) return false
+    let sawFalse = false
+    for (const item of payload) {
+      const result = resolveVentaExistsDeep(item)
+      if (result === true) return true
+      if (result === false) sawFalse = true
+    }
+    return sawFalse ? false : null
+  }
+
+  if (!isRecord(payload)) return null
+
+  const priorityKeys = [
+    'existeVenta',
+    'ExisteVenta',
+    'tieneVenta',
+    'TieneVenta',
+    'ventaExiste',
+    'VentaExiste',
+    'registrado',
+    'Registrado',
+    'idVenta',
+    'IdVenta',
+    'id_venta',
+    'Id_Venta',
+    'total',
+    'Total',
+    'count',
+    'Count',
+    'cantidad',
+    'Cantidad',
+    'message',
+    'Message',
+    'mensaje',
+    'Mensaje',
+  ]
+  for (const key of priorityKeys) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+    const result = resolveVentaExistsDeep(payload[key])
+    if (result !== null) return result
+  }
+
+  for (const value of Object.values(payload)) {
+    const result = resolveVentaExistsDeep(value)
+    if (result === true) return true
+  }
+
+  return null
+}
+
+const resolveVentaExists = (payload: unknown): boolean => {
+  const deepResolved = resolveVentaExistsDeep(payload)
+  if (deepResolved !== null) return deepResolved
+
+  if (payload === undefined || payload === null) return false
+
+  const parsedPrimitive = parseBooleanLike(payload)
+  if (parsedPrimitive !== null) return parsedPrimitive
+
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) return false
+    if (payload.length === 1) return resolveVentaExists(payload[0])
+    return true
+  }
+
+  if (!isRecord(payload)) return false
+
+  const message = readString(payload, ['message', 'Message', 'mensaje', 'Mensaje']).trim().toLowerCase()
+  if (message) {
+    if (message.includes('no existe') || message.includes('sin registro') || message.includes('no encontrado')) return false
+    if (message.includes('existe') || message.includes('encontrado') || message.includes('registrado')) return true
+  }
+
+  const directFlag = parseBooleanLike(
+    pickValue(payload, ['existeVenta', 'ExisteVenta', 'tieneVenta', 'TieneVenta', 'ventaExiste', 'VentaExiste', 'registrado', 'Registrado'])
+  )
+  if (directFlag !== null) return directFlag
+
+  const idVenta = readNumber(payload, ['idVenta', 'IdVenta', 'id_venta', 'Id_Venta']) ?? 0
+  const idCodigoVenta = readNumber(payload, ['idCodigoVenta', 'IdCodigoVenta', 'id_codigoventa', 'Id_CodigoVenta']) ?? 0
+  if (idVenta > 0 || idCodigoVenta > 0) return true
+
+  const total = readNumber(payload, ['total', 'Total', 'count', 'Count', 'cantidad', 'Cantidad']) ?? 0
+  if (total > 0) return true
+
+  // If backend returns a row with venta-like keys, we treat it as existing sale/detail.
+  const rowLikeOt = readString(payload, ['ot', 'OT', 'ordenTrabajo', 'OrdenTrabajo']).trim()
+  const rowLikeCliente = readString(payload, ['clienteNro', 'ClienteNro', 'cliente_nro', 'Cliente_Nro', 'nroCliente', 'NroCliente']).trim()
+  const rowLikeFecha = readString(payload, ['fecha', 'Fecha', 'fechaVenta', 'FechaVenta', 'fechaRegistro', 'FechaRegistro']).trim()
+  if (rowLikeOt || rowLikeCliente || rowLikeFecha) return true
+
+  for (const value of Object.values(payload)) {
+    if (Array.isArray(value) && value.length > 0) return true
+  }
+
+  if (Object.prototype.hasOwnProperty.call(payload, 'data')) {
+    return resolveVentaExists(payload.data)
+  }
+
+  return false
+}
+
+export const validateVentaYDetalle = async (params: {
+  fecha: string
+  ot: string
+  clienteNro: string
+}): Promise<{ existeVenta: boolean; tieneDetalleEnCodigoVenta: boolean }> => {
+  const rawFecha = params.fecha.trim()
+  const isoLike = rawFecha.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  const dmyLike = rawFecha.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  const compactLike = rawFecha.match(/^(\d{4})(\d{2})(\d{2})$/)
+
+  const fechaDdMmYyyy = isoLike
+    ? `${isoLike[3]}/${isoLike[2]}/${isoLike[1]}`
+    : dmyLike
+      ? `${dmyLike[1]}/${dmyLike[2]}/${dmyLike[3]}`
+      : compactLike
+        ? `${compactLike[3]}/${compactLike[2]}/${compactLike[1]}`
+        : rawFecha.slice(0, 10)
+
+  const { data } = await api.get('/ot/spx_ValidarVentaYDetallewb', {
+    params: {
+      fecha: fechaDdMmYyyy,
+      nroOT: params.ot.trim(),
+      numeroCliente: params.clienteNro.trim(),
+    },
+  })
+
+  const envelopeData = isRecord(data) && isRecord(data.data) ? data.data : data
+  const payload = isRecord(envelopeData) ? envelopeData : {}
+
+  const existeVentaFlag = readBoolean(payload, ['existeVenta', 'ExisteVenta', 'ventaExiste', 'VentaExiste'])
+  const cantidadVentas = readNumber(payload, ['cantidadVentas', 'CantidadVentas', 'countVentas', 'CountVentas']) ?? 0
+  const existeVenta = existeVentaFlag !== undefined ? existeVentaFlag : cantidadVentas > 0 ? true : resolveVentaExists(data)
+
+  const detalleFlag = readBoolean(payload, ['tieneDetalleEnCodigoVenta', 'TieneDetalleEnCodigoVenta', 'existeDetalle', 'ExisteDetalle'])
+  const cantidadDetalles = readNumber(payload, ['cantidadDetalles', 'CantidadDetalles', 'countDetalles', 'CountDetalles']) ?? 0
+  const tieneDetalleEnCodigoVenta = detalleFlag !== undefined ? detalleFlag : cantidadDetalles > 0
+
+  return {
+    existeVenta,
+    tieneDetalleEnCodigoVenta,
   }
 }

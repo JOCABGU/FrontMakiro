@@ -15,7 +15,7 @@ const FormCard = ({ title, description, children, actions }: FormCardProps) => {
           <h3 className="text-xl font-semibold text-slate-900">{title}</h3>
           {description ? <p className="text-sm text-slate-600">{description}</p> : null}
         </div>
-        {actions ? <div className="flex items-center gap-3">{actions}</div> : null}
+        {actions ? <div className="flex w-full items-center gap-3 sm:w-auto">{actions}</div> : null}
       </div>
       <div className="mt-6">{children}</div>
     </div>

@@ -29,11 +29,11 @@ export const otActionItems: OtActionItem[] = [
   },
   {
     key: 'realizada',
-    label: 'Registrar OT realizada',
-    description: 'Actualiza una OT como realizada con estado y observacion.',
-    buttonLabel: 'Registrar OT',
-    to: '/ot/realizada',
-    routePatterns: ['/ot/realizada'],
+    label: 'RegistrarOrdenAgenda_Detalle',
+    description: 'Actualiza una OT con estado y observacion.',
+    buttonLabel: 'Registrar detalle',
+    to: '/ot/RegistrarOrdenAgenda_Detalle',
+    routePatterns: ['/ot/RegistrarOrdenAgenda_Detalle', '/ot/realizada'],
     requiredMenuId: 2,
   },
   {

@@ -35,6 +35,8 @@ const Table = <T,>({
   const isRowBlock = variant === 'row-block'
   const desktopScrollClass =
     desktopScrollMode === 'always' ? 'overflow-x-scroll overflow-y-scroll' : 'overflow-x-auto overflow-y-auto'
+
+  const isActionColumn = (column: Column<T>): boolean => /accion|acciones/i.test(column.header)
   const renderValue = (column: Column<T>, row: T) => {
     return column.render ? column.render(row) : (row as Record<string, ReactNode>)[column.key]
   }
@@ -49,20 +51,32 @@ const Table = <T,>({
             {data.map((row, index) => (
               <div
                 key={index}
-                className={`space-y-2 p-3 ${isRowBlock ? 'rounded-2xl border border-slate-200/80 bg-white shadow-sm' : ''} ${rowClassName}`}
+                className={`space-y-2 p-3 ${isRowBlock ? 'rounded-2xl border border-brand-100/80 bg-white shadow-sm' : ''} ${rowClassName}`}
               >
-                {columns.map((column) =>
-                  mobileShowHeaders ? (
-                    <div key={column.key} className="flex items-start justify-between gap-4">
-                      <span className="shrink-0 text-xs font-semibold uppercase text-slate-400">{column.header}</span>
-                      <div className="break-words text-right text-sm text-slate-700">{renderValue(column, row)}</div>
-                    </div>
-                  ) : (
-                    <div key={column.key} className="break-words text-sm text-slate-700">
-                      {renderValue(column, row)}
-                    </div>
-                  )
-                )}
+                {columns
+                  .filter((column) => !isActionColumn(column))
+                  .map((column) =>
+                    mobileShowHeaders ? (
+                      <div key={column.key} className="grid grid-cols-[minmax(96px,40%)_1fr] items-start gap-3">
+                        <span className="text-xs font-semibold text-slate-500">{column.header}</span>
+                        <div className="break-words text-right text-sm font-medium text-slate-700">{renderValue(column, row)}</div>
+                      </div>
+                    ) : (
+                      <div key={column.key} className="break-words text-sm text-slate-700">
+                        {renderValue(column, row)}
+                      </div>
+                    )
+                  )}
+
+                {columns.some((column) => isActionColumn(column)) ? (
+                  <div className="space-y-2 border-t border-slate-200/80 pt-2 [&>div>button]:w-full [&>div>button]:justify-center">
+                    {columns
+                      .filter((column) => isActionColumn(column))
+                      .map((column) => (
+                        <div key={column.key}>{renderValue(column, row)}</div>
+                      ))}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>

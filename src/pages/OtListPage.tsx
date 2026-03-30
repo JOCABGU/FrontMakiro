@@ -15,7 +15,6 @@ type SessionLike = { idUsuario?: number; nombre?: string } | null | undefined
 
 const ROLE_SUPERVISOR_ID = 9
 const ROLE_TECNICO_ID = 8
-const ROLE_ADMIN_ID = 4
 const DEFAULT_ESTADO_FILTER_OPTIONS = ['pendiente', 'en proceso', 'ejecutada', 'aceptado', 'fallida con visita']
 const GROUP_STYLES = [
   'bg-amber-200 text-amber-900',
@@ -83,6 +82,10 @@ const getOtCliente = (row: OtSummary): string => {
   return readString(row, ['cliente', 'Cliente', 'clienteNombre', 'ClienteNombre'])
 }
 
+const getOtClienteNro = (row: OtSummary): string => {
+  return readString(row, ['cliente_nro', 'Cliente_Nro', 'clienteNro', 'cliente', 'Cliente'])
+}
+
 const getOtTecnico = (row: OtSummary): string => {
   return readString(row, ['tecnico', 'Tecnico', 'nombreUsuario', 'NombreUsuario', 'usuario', 'Usuario'])
 }
@@ -105,6 +108,10 @@ const getOtEstado = (row: OtSummary): string => {
   if (typeof value === 'boolean') return value ? 'Pendiente' : 'Finalizada'
   if (typeof value === 'number') return value === 1 ? 'Pendiente' : value === 0 ? 'Finalizada' : String(value)
   return typeof value === 'string' ? value : String(value)
+}
+
+const getOtTor = (row: OtSummary): string => {
+  return readString(row, ['tor', 'TOR', 'Tor'])
 }
 
 const isAssignedToUser = (row: OtSummary, session: SessionLike): boolean => {
@@ -227,7 +234,6 @@ const OtListPage = () => {
   const roleName = normalizeText(session?.rol ?? '')
   const isSupervisor = roleId === ROLE_SUPERVISOR_ID || roleName === 'supervisor'
   const isTecnico = roleId === ROLE_TECNICO_ID || roleName === 'tecnico'
-  const isSistemasOrAdmin = roleId === ROLE_ADMIN_ID || roleName.includes('sistema') || roleName.includes('admin')
 
   useEffect(() => {
     if (!isSupervisor && view === 'calendario') {
@@ -252,8 +258,6 @@ const OtListPage = () => {
   const [horarioFecha, setHorarioFecha] = useState(todayKey)
   const [buscarFecha, setBuscarFecha] = useState(todayKey)
   const [selectedEstados, setSelectedEstados] = useState<string[]>([])
-  const [tecnicoInput, setTecnicoInput] = useState('')
-  const [tecnicoDebounced, setTecnicoDebounced] = useState('')
   const horarioLabel = formatDateDMY(horarioFecha)
   const buscarLabel = formatDateDMY(buscarFecha)
   const apiRole = session?.rol?.trim() || undefined
@@ -261,13 +265,6 @@ const OtListPage = () => {
   const selectedEstadosCsv = useMemo(() => selectedEstados.join(','), [selectedEstados])
   const estadoListParam = selectedEstados.length ? selectedEstados : undefined
   const estadoCsvParam = selectedEstadosCsv || undefined
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      setTecnicoDebounced(tecnicoInput.trim())
-    }, 400)
-    return () => window.clearTimeout(timeoutId)
-  }, [tecnicoInput])
 
   const horarioQuery = useQuery({
     queryKey: ['ot-horario-listaot', horarioFecha, selectedEstadosCsv, apiRole ?? ''],
@@ -281,13 +278,13 @@ const OtListPage = () => {
   })
 
   const buscarQuery = useQuery({
-    queryKey: ['ot-buscar-listaot', buscarFecha, selectedEstadosCsv, isSistemasOrAdmin ? tecnicoDebounced : '', apiRole ?? ''],
+    queryKey: ['ot-buscar-listaot', buscarFecha, selectedEstadosCsv, apiUserId ?? 0, apiRole ?? ''],
     queryFn: () =>
       fetchListaOt({
         fecha: buscarFecha,
         estado: estadoCsvParam,
         estados: estadoListParam,
-        tecnico: isSistemasOrAdmin && tecnicoDebounced ? tecnicoDebounced : undefined,
+        idUsuario: apiUserId,
         rol: apiRole,
       }),
   })
@@ -344,29 +341,24 @@ const OtListPage = () => {
 
   const columns: Column<OtSummary>[] = [
     {
-      key: 'codigo',
-      header: 'Codigo',
-      render: (row) => getOtCodigo(row) || 'Sin codigo',
+      key: 'cliente_nro',
+      header: 'Cliente Nro',
+      render: (row) => getOtClienteNro(row) || 'Sin dato',
     },
     {
-      key: 'cliente',
-      header: 'Cliente',
-      render: (row) => getOtCliente(row) || 'Sin cliente',
-    },
-    {
-      key: 'tecnico',
-      header: 'Tecnico',
-      render: (row) => getOtTecnico(row) || 'Sin tecnico',
-    },
-    {
-      key: 'fecha',
-      header: 'Fecha',
-      render: (row) => formatDate(getOtFecha(row)),
+      key: 'ot',
+      header: 'OT',
+      render: (row) => getOtCodigo(row) || 'Sin OT',
     },
     {
       key: 'estado',
       header: 'Estado',
-      render: (row) => <span className="badge">{getOtEstado(row) || 'Pendiente'}</span>,
+      render: (row) => getOtEstado(row) || 'Sin estado',
+    },
+    {
+      key: 'tor',
+      header: 'TOR',
+      render: (row) => getOtTor(row) || 'Sin dato',
     },
     {
       key: 'acciones',
@@ -378,7 +370,7 @@ const OtListPage = () => {
         }
         return (
           <Button variant="secondary" onClick={() => navigate(`/ot/${id}`)} type="button">
-            Ver detalle
+            Agregar datos
           </Button>
         )
       },
@@ -495,22 +487,33 @@ const OtListPage = () => {
     <div className="bento-page">
       <div className="bento-page-head flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-2xl font-semibold text-slate-900">Lista de OT pendientes</h2>
+          <h2 className="text-xl font-semibold text-slate-900 sm:text-2xl">Lista de OT pendientes</h2>
           <p className="text-sm text-slate-500">
             {isSupervisor ? 'Viendo todas las OT pendientes.' : isTecnico ? 'Viendo tus OT pendientes.' : 'Viendo OT pendientes.'}
           </p>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant={view === 'horario' ? 'primary' : 'secondary'} type="button" onClick={() => handleSelectView('horario')}>
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center">
+        <Button
+          className="w-full sm:w-auto"
+          variant={view === 'horario' ? 'primary' : 'secondary'}
+          type="button"
+          onClick={() => handleSelectView('horario')}
+        >
           Horario
         </Button>
-        <Button variant={view === 'buscar' ? 'primary' : 'secondary'} type="button" onClick={() => handleSelectView('buscar')}>
+        <Button
+          className="w-full sm:w-auto"
+          variant={view === 'buscar' ? 'primary' : 'secondary'}
+          type="button"
+          onClick={() => handleSelectView('buscar')}
+        >
           Buscar
         </Button>
         {isSupervisor ? (
           <Button
+            className="col-span-2 w-full sm:col-auto sm:w-auto"
             variant={view === 'calendario' ? 'primary' : 'secondary'}
             type="button"
             onClick={() => handleSelectView('calendario')}
@@ -521,7 +524,7 @@ const OtListPage = () => {
       </div>
 
       {view === 'horario' ? (
-        <div className="glass-panel p-6">
+        <div className="glass-panel p-4 sm:p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="section-title">Horario</h3>
@@ -611,10 +614,10 @@ const OtListPage = () => {
                           type="button"
                           onClick={() => handleOpenDetail(row)}
                           disabled={!id}
-                          className={`flex w-full flex-col gap-1 rounded-xl border border-white/80 bg-white px-3 py-2 text-left text-xs text-slate-700 shadow-sm transition hover:border-brand-200 hover:bg-brand-50 ${pickAccentClass(
-                            grupoLabel
-                          )}`}
-                        >
+                      className={`flex w-full flex-col gap-1 rounded-xl border border-white/80 bg-white px-3 py-2 text-left text-sm text-slate-700 shadow-sm transition hover:border-brand-200 hover:bg-brand-50 ${pickAccentClass(
+                        grupoLabel
+                      )}`}
+                    >
                         <div className="flex items-center justify-between">
                           <span className="font-semibold text-slate-700">{codigo}</span>
                           {time ? <span className="text-[11px] text-slate-400">{time}</span> : null}
@@ -649,10 +652,10 @@ const OtListPage = () => {
                         type="button"
                         onClick={() => handleOpenDetail(row)}
                         disabled={!id}
-                        className={`flex w-full flex-col gap-1 rounded-xl border border-white/80 bg-white px-3 py-2 text-left text-xs text-slate-700 shadow-sm transition hover:border-brand-200 hover:bg-brand-50 ${pickAccentClass(
-                          grupoLabel
-                        )}`}
-                      >
+                      className={`flex w-full flex-col gap-1 rounded-xl border border-white/80 bg-white px-3 py-2 text-left text-sm text-slate-700 shadow-sm transition hover:border-brand-200 hover:bg-brand-50 ${pickAccentClass(
+                        grupoLabel
+                      )}`}
+                    >
                         <div className="font-semibold text-slate-700">{codigo}</div>
                         {cliente ? <span className="text-[11px] text-slate-500">{cliente}</span> : null}
                         {ruta ? <span className="text-[11px] text-slate-400">{ruta}</span> : null}
@@ -668,11 +671,11 @@ const OtListPage = () => {
       ) : null}
 
       {view === 'buscar' ? (
-        <div className="glass-panel p-6">
+        <div className="glass-panel p-4 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="section-title">Buscar</h3>
-              <p className="text-xs text-slate-500">Filtra por fecha, estado y tecnico (Sistemas/Admin).</p>
+              <p className="text-xs text-slate-500">Filtra por fecha y estado.</p>
             </div>
             {buscarQuery.isFetching ? <span className="text-xs text-slate-500">Actualizando...</span> : null}
           </div>
@@ -681,17 +684,6 @@ const OtListPage = () => {
             <Field label="Fecha">
               <input className="input-base" type="date" value={buscarFecha} onChange={(event) => setBuscarFecha(event.target.value)} />
             </Field>
-            {isSistemasOrAdmin ? (
-              <Field label="Tecnico">
-                <input
-                  className="input-base"
-                  type="text"
-                  value={tecnicoInput}
-                  onChange={(event) => setTecnicoInput(event.target.value)}
-                  placeholder="Buscar por nombre de tecnico..."
-                />
-              </Field>
-            ) : null}
           </div>
 
           <div className="mt-3">
@@ -731,14 +723,14 @@ const OtListPage = () => {
             {buscarErrorMessage ? (
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{buscarErrorMessage}</div>
             ) : (
-              <Table columns={columns} data={buscarData} emptyLabel={emptyLabel} />
+              <Table columns={columns} data={buscarData} emptyLabel={emptyLabel} variant="row-block" />
             )}
           </div>
         </div>
       ) : null}
 
       {view === 'calendario' ? (
-        <div className="glass-panel bg-slate-50/80 p-6">
+        <div className="glass-panel bg-slate-50/80 p-4 sm:p-6">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <h3 className="section-title">Calendario</h3>
@@ -777,7 +769,7 @@ const OtListPage = () => {
               ))}
             </div>
 
-            <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-7 sm:gap-2">
+            <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-7 lg:gap-2">
               {calendarDays.map((day) => {
                 const dayKey = formatISODate(day)
                 const dayItems = calendarItemsByDate.get(dayKey) ?? []
@@ -789,7 +781,7 @@ const OtListPage = () => {
                   <div
                     key={dayKey}
                     onClick={isMobile ? () => openDayModal(dayKey) : undefined}
-                    className={`min-h-[160px] rounded-2xl border px-3 py-3 shadow-sm transition sm:min-h-[190px] ${
+                    className={`min-h-[140px] rounded-2xl border px-3 py-3 shadow-sm transition sm:min-h-[170px] lg:min-h-[190px] ${
                       isCurrentMonth ? DAY_CARD_CLASS : 'border-slate-300 bg-white'
                     } ${isMobile ? 'cursor-pointer hover:border-brand-200' : ''}`}
                   >
@@ -808,7 +800,7 @@ const OtListPage = () => {
                             event.stopPropagation()
                             openDayModal(dayKey)
                           }}
-                          className="hidden rounded-full border border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:border-brand-200 hover:text-brand-600 sm:inline-flex"
+                          className="rounded-full border border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-600 hover:border-brand-200 hover:text-brand-600"
                         >
                           Info
                         </button>

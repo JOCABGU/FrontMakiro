@@ -12,6 +12,7 @@ import OtRealizadaPage from '../pages/OtRealizadaPage'
 import OtModificarPage from '../pages/OtModificarPage'
 import OtModificarFechaPage from '../pages/OtModificarFechaPage'
 import OtAnularPage from '../pages/OtAnularPage'
+import RegistrarOTAgendaPage from '../pages/RegistrarOTAgendaPage'
 import CuNoRealizadoListPage from '../pages/CuNoRealizadoListPage'
 import CuNoRealizadoDetailPage from '../pages/CuNoRealizadoDetailPage'
 import CuNoRealizadoCreatePage from '../pages/CuNoRealizadoCreatePage'
@@ -33,7 +34,9 @@ const AppRoutes = () => {
           <Route path="/ot/crear" element={<OtCreatePage />} />
           <Route path="/ot/lista" element={<OtListPage />} />
           <Route path="/ot/:id" element={<OtDetailPage />} />
-          <Route path="/ot/realizada" element={<OtRealizadaPage />} />
+          <Route path="/ot/RegistrarOrdenAgenda_Detalle" element={<OtRealizadaPage />} />
+          <Route path="/ot/realizada" element={<Navigate to="/ot/RegistrarOrdenAgenda_Detalle" replace />} />
+          <Route path="/ot/RegistrarOrdenAgenda" element={<RegistrarOTAgendaPage />} />
           <Route path="/ot/modificar" element={<OtModificarPage />} />
           <Route path="/ot/modificar-fecha" element={<OtModificarFechaPage />} />
           <Route path="/ot/anular" element={<OtAnularPage />} />
