@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import axios from 'axios'
 import Button from '../components/common/Button'
 import FormCard from '../components/common/FormCard'
 import Modal from '../components/common/Modal'
-import api from '../api/http'
 import { fetchEstados, fetchRutas, fetchTiposServicio, type CatalogItem } from '../api/catalogApi'
+import {
+  fetchCabeceraVentaParaRegistroOtWb,
+  fetchOtByNumero,
+  registrarVentaParaRegistroOtWb,
+  validateCuadreRuta,
+  validateExisteCierreAlmacen,
+} from '../api/otApi'
 import { useSessionStore } from '../store/sessionStore'
 
 type AgendaNavState = {
@@ -80,6 +86,24 @@ const parseNumber = (value: string): number | null => {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+const findNumberInRows = (rows: UnknownRecord[], keys: string[]): number | null => {
+  for (const row of rows) {
+    const value = readNumber(row, keys)
+    if (value !== null) return value
+  }
+  return null
+}
+
+const isUnknownRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null
+
+const isNotFoundError = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) return false
+  if (error.response?.status === 404) return true
+  const payload = error.response?.data
+  if (isUnknownRecord(payload) && payload.code === 'NOT_FOUND') return true
+  return false
+}
+
 const mapOptions = (items: CatalogItem[], idKeys: string[], labelKeys: string[]): Array<{ value: string; label: string }> => {
   return items
     .map((item) => {
@@ -143,8 +167,12 @@ const RegistrarOTAgendaPage = () => {
   const [calibrationModalOpen, setCalibrationModalOpen] = useState(false)
   const [calibrationMessage, setCalibrationMessage] = useState('Calibrando GPS con alta precision...')
   const [calibrationBusy, setCalibrationBusy] = useState(false)
+  const [isPrevalidating, setIsPrevalidating] = useState(false)
+  const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
+  const queryClient = useQueryClient()
 
-  const ot = parseNumber((navState?.ot ?? '').trim())
+  const otRaw = (navState?.ot ?? '').trim()
+  const ot = parseNumber(otRaw)
   const clienteNro = parseNumber((navState?.clienteNro ?? '').trim())
   const tor = (navState?.tor ?? '').trim()
   const tecnicoNombre = (navState?.tecnicoNombre ?? '').trim() || (session?.nombre ?? '').trim()
@@ -197,15 +225,7 @@ const RegistrarOTAgendaPage = () => {
   const cabeceraQuery = useQuery({
     queryKey: ['cabecera-venta-registro-otwb', spParams.clienteNro, spParams.ot, spParams.tor, spParams.grupo, spParams.tecnicoNombre],
     enabled: Boolean(clienteNro && ot && tor && tecnicoNombre),
-    queryFn: async () => {
-      const { data } = await api.get('/ot/spx_ObtenerCaberaVentaParaRegistroOTwb', { params: spParams })
-      if (Array.isArray(data)) return data as UnknownRecord[]
-      if (data && typeof data === 'object' && Array.isArray((data as { data?: unknown }).data)) {
-        return (data as { data: UnknownRecord[] }).data
-      }
-      if (data && typeof data === 'object') return [data as UnknownRecord]
-      return []
-    },
+    queryFn: () => fetchCabeceraVentaParaRegistroOtWb(spParams),
   })
 
   const cabeceraRows = useMemo(() => cabeceraQuery.data ?? [], [cabeceraQuery.data])
@@ -214,23 +234,42 @@ const RegistrarOTAgendaPage = () => {
     return cabeceraRows[0] ?? null
   }, [cabeceraRows])
 
-  const hiddenIdVendedor = useMemo(
-    () => (cabecera ? readNumber(cabecera, ['id_vendedor', 'Id_Vendedor', 'idVendedor', 'IdVendedor']) : navIdVendedor),
-    [cabecera, navIdVendedor]
-  )
-  const hiddenIdRuta = useMemo(() => (cabecera ? readNumber(cabecera, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta']) : navIdRuta), [cabecera, navIdRuta])
-  const hiddenIdGrupo = useMemo(
-    () => (cabecera ? readNumber(cabecera, ['id_grupo', 'Id_Grupo', 'idGrupo', 'IdGrupo']) ?? hiddenIdRuta : navIdRuta),
-    [cabecera, hiddenIdRuta, navIdRuta]
-  )
-  const hiddenIdTipoServicio = useMemo(
-    () => (cabecera ? readNumber(cabecera, ['id_tiposervicio', 'Id_TipoServicio', 'idTipoServicio', 'IdTipoServicio']) : navIdTipoServicio),
-    [cabecera, navIdTipoServicio]
-  )
-  const hiddenIdSucursal = useMemo(
-    () => (cabecera ? readNumber(cabecera, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal']) : navIdSucursal ?? null),
-    [cabecera, navIdSucursal]
-  )
+  const otDetailQuery = useQuery({
+    queryKey: ['ot-por-numero', otRaw],
+    queryFn: () => fetchOtByNumero(otRaw),
+    enabled: Boolean(otRaw),
+    retry: false,
+  })
+  const otDetailRow = otDetailQuery.data ?? null
+
+  const resolvedRows = useMemo<UnknownRecord[]>(() => {
+    const rows: UnknownRecord[] = []
+    if (cabeceraRows.length > 0) rows.push(...cabeceraRows)
+    if (otDetailRow) rows.push(otDetailRow)
+    if (rowData) rows.push(rowData)
+    return rows
+  }, [cabeceraRows, otDetailRow, rowData])
+
+  const hiddenIdVendedor = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, ['id_vendedor', 'Id_Vendedor', 'idVendedor', 'IdVendedor', 'idusuario', 'IdUsuario'])
+    return cabeceraValue ?? navIdVendedor ?? null
+  }, [navIdVendedor, resolvedRows])
+  const hiddenIdRuta = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta'])
+    return cabeceraValue ?? navIdRuta ?? null
+  }, [navIdRuta, resolvedRows])
+  const hiddenIdGrupo = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, ['id_grupo', 'Id_Grupo', 'idGrupo', 'IdGrupo'])
+    return cabeceraValue ?? hiddenIdRuta ?? navIdRuta ?? null
+  }, [navIdRuta, resolvedRows, hiddenIdRuta])
+  const hiddenIdTipoServicio = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, ['id_tiposervicio', 'Id_TipoServicio', 'idTipoServicio', 'IdTipoServicio'])
+    return cabeceraValue ?? navIdTipoServicio ?? null
+  }, [navIdTipoServicio, resolvedRows])
+  const hiddenIdSucursal = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal'])
+    return cabeceraValue ?? navIdSucursal ?? null
+  }, [navIdSucursal, resolvedRows])
 
   const tecnicoVisible = useMemo(() => {
     if (!cabecera) return tecnicoNombre
@@ -304,16 +343,24 @@ const RegistrarOTAgendaPage = () => {
   const hasGeoFix = latitud !== null && longitud !== null && geoAccuracy !== null
   const geoIsPrecise = geoAccuracy !== null && geoAccuracy <= GEO_TARGET_ACCURACY_METERS
 
-  const canSubmitBase = Boolean(
-    session?.idUsuario &&
-      hiddenIdVendedor &&
-      hiddenIdGrupo &&
-      hiddenIdTipoServicio &&
-      hiddenIdSucursal &&
-      parseNumber(idEstado) &&
-      otVisible &&
-      clienteVisible
-  )
+  const parsedEstadoId = parseNumber(idEstado)
+  const hasRequiredIds =
+    hiddenIdVendedor !== null &&
+    hiddenIdRuta !== null &&
+    hiddenIdGrupo !== null &&
+    hiddenIdTipoServicio !== null &&
+    hiddenIdSucursal !== null
+
+  const missingHeaderFields = useMemo(() => {
+    const missing: string[] = []
+    if (hiddenIdVendedor === null) missing.push('vendedor (idUsuario/idVendedor)')
+    if (hiddenIdRuta === null) missing.push('ruta/grupo (idRuta/idGrupo)')
+    if (hiddenIdTipoServicio === null) missing.push('tipo de servicio (idTipoServicio)')
+    if (hiddenIdSucursal === null) missing.push('sucursal (idSucursal)')
+    return missing
+  }, [hiddenIdRuta, hiddenIdSucursal, hiddenIdTipoServicio, hiddenIdVendedor])
+
+  const canSubmitBase = Boolean(session?.idUsuario && hasRequiredIds && parsedEstadoId !== null && otVisible && clienteVisible)
 
   const requestGeolocation = () => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -551,7 +598,7 @@ const RegistrarOTAgendaPage = () => {
         idGrupo: hiddenIdGrupo ?? 0,
         idTipoServicio: hiddenIdTipoServicio ?? 0,
         ordenTrabajo,
-        idEstado: parseNumber(idEstado) ?? 0,
+        idEstado: parsedEstadoId ?? 0,
         codigoCliente,
         idSucursal: hiddenIdSucursal ?? 0,
         nombre: tecnicoVisible,
@@ -564,8 +611,7 @@ const RegistrarOTAgendaPage = () => {
         latitud: coordinates?.latitud ?? latitud ?? 0,
         longitud: coordinates?.longitud ?? longitud ?? 0,
       }
-      const response = await api.post('/ot/spx_RegistrarVentaParaRegistroOTwb', payload)
-      return response.data as { data?: { idVenta?: number; ordenTrabajo?: number } }
+      return await registrarVentaParaRegistroOtWb(payload)
     },
     onSuccess: (data) => {
       const idVenta = data?.data?.idVenta
@@ -573,15 +619,60 @@ const RegistrarOTAgendaPage = () => {
       setSubmitError(null)
       if (idVenta || orden) {
         setSuccess(`Venta registrada correctamente. IdVenta: ${idVenta ?? '-'} | OT: ${orden ?? '-'}`)
-        return
+      } else {
+        setSuccess('Venta registrada correctamente.')
       }
-      setSuccess('Venta registrada correctamente.')
+      queryClient.invalidateQueries({ queryKey: ['ot-dashboard-lista'] })
     },
     onError: () => {
       setSuccess(null)
       setSubmitError('No se pudo guardar la OT. Revisa los datos de cabecera y estado.')
     },
   })
+
+  const runPreRegisterValidations = async (): Promise<boolean> => {
+    const routeId = hiddenIdRuta ?? hiddenIdGrupo ?? null
+    const executionDate = formatDateDDMMYYYY(new Date())
+
+    if (routeId === null || routeId <= 0) {
+      setSubmitError('No se pudo resolver la ruta/grupo para validar cierre y cuadre antes del registro.')
+      return false
+    }
+
+    setIsPrevalidating(true)
+    try {
+      const [cierreAgenda, hasCuadreRuta] = await Promise.all([
+        validateExisteCierreAlmacen({
+          fecha: executionDate,
+        }),
+        validateCuadreRuta({
+          idRuta: routeId,
+          fecha: executionDate,
+        }),
+      ])
+
+      if (cierreAgenda.bloqueado) {
+        setSubmitError(cierreAgenda.mensaje || 'No se puede registrar la OT porque existe cierre de almacen.')
+        return false
+      }
+
+      if (hasCuadreRuta) {
+        setSubmitError('No se puede registrar la OT porque la ruta ya realizo cuadre.')
+        return false
+      }
+
+      return true
+    } catch (error) {
+      if (axios.isAxiosError(error)) {
+        setSubmitError(error.response?.data?.message ?? 'No se pudo validar cierre/cuadre antes del registro.')
+      } else {
+        setSubmitError('No se pudo validar cierre/cuadre antes del registro.')
+      }
+      return false
+    } finally {
+      setIsPrevalidating(false)
+    }
+  }
 
   const validateReadyToRegister = (sample: GeoSample | null): boolean => {
     if (!sample) {
@@ -596,7 +687,7 @@ const RegistrarOTAgendaPage = () => {
   }
 
   const runCalibrationAndSubmit = async () => {
-    if (calibrationBusy || mutation.isPending) return
+    if (calibrationBusy || mutation.isPending || isPrevalidating) return
 
     setSubmitError(null)
     setSuccess(null)
@@ -606,6 +697,9 @@ const RegistrarOTAgendaPage = () => {
     setCalibrationMessage('Calibrando GPS con alta precision. No cierres esta ventana...')
 
     try {
+      const canContinue = await runPreRegisterValidations()
+      if (!canContinue) return
+
       const best = await calibrateGeolocationForSubmit()
       if (!best) {
         setSubmitError('Debes capturar ubicacion antes de registrar la OT.')
@@ -625,6 +719,7 @@ const RegistrarOTAgendaPage = () => {
 
   const handleFormSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    setHasAttemptedSubmit(true)
     setSubmitError(null)
     setSuccess(null)
     if (!canSubmitBase) {
@@ -660,11 +755,35 @@ const RegistrarOTAgendaPage = () => {
     return String(error)
   }, [cabeceraQuery.error])
 
+  const hiddenHeaderMessage = useMemo(() => {
+    if (!hasAttemptedSubmit || missingHeaderFields.length === 0) return null
+    return `Faltan datos de cabecera requeridos: ${missingHeaderFields.join(', ')}.`
+  }, [hasAttemptedSubmit, missingHeaderFields])
+
+  const otDetailErrorDetail = useMemo(() => {
+    const error = otDetailQuery.error
+    if (!error) return ''
+    if (axios.isAxiosError(error)) {
+      if (error.response?.data) {
+        try {
+          return JSON.stringify(error.response.data)
+        } catch {
+          return String(error.response.data)
+        }
+      }
+      return error.message
+    }
+    if (error instanceof Error) return error.message
+    return String(error)
+  }, [otDetailQuery.error])
+
+  const showOtDetailError = otDetailQuery.isError && !isNotFoundError(otDetailQuery.error)
+
   return (
     <div className="bento-page">
       <div className="bento-page-head">
         <h2 className="text-xl font-semibold text-slate-900 sm:text-2xl">RegistrarOrdenAgenda</h2>
-        <p className="text-sm text-slate-500">Basado en API `spx_ObtenerCaberaVentaParaRegistroOTwb`.</p>
+        <p className="text-sm text-slate-500">Basado en API de cabecera de venta OT.</p>
       </div>
 
       <form className="flex flex-col gap-6" onSubmit={handleFormSubmit}>
@@ -746,6 +865,9 @@ const RegistrarOTAgendaPage = () => {
             Params SP: clienteNro={spParams.clienteNro}, ot={spParams.ot}, tor='{spParams.tor}', grupo='{spParams.grupo}', tecnicoNombre='{spParams.tecnicoNombre}'
           </div>
         ) : null}
+        {hiddenHeaderMessage ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{hiddenHeaderMessage}</div>
+        ) : null}
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 break-words">
           Geolocalizacion: lat={latitud ?? 'N/D'}, lon={longitud ?? 'N/D'}
           {hasGeoFix ? (
@@ -759,7 +881,7 @@ const RegistrarOTAgendaPage = () => {
               onClick={() => {
                 void requestGeolocation()
               }}
-              disabled={geoLoading || calibrationBusy}
+              disabled={geoLoading || calibrationBusy || isPrevalidating}
             >
               {geoLoading ? 'Obteniendo ubicacion...' : 'Actualizar ubicacion'}
             </Button>
@@ -768,24 +890,34 @@ const RegistrarOTAgendaPage = () => {
         </div>
         {cabeceraQuery.isError ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
-            No se pudo cargar la cabecera desde `spx_ObtenerCaberaVentaParaRegistroOTwb`.
+            No se pudo cargar la cabecera de venta OT.
             {cabeceraErrorDetail ? <div className="mt-2 break-all text-xs">{cabeceraErrorDetail}</div> : null}
+          </div>
+        ) : null}
+        {showOtDetailError ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+            No se pudo obtener el detalle de la OT por numero (`fetchOtByNumero`).
+            {otDetailErrorDetail ? <div className="mt-2 break-all text-xs">{otDetailErrorDetail}</div> : null}
           </div>
         ) : null}
         {!cabeceraQuery.isLoading && !cabeceraQuery.isError && cabeceraRows.length > 0 && !sucursalVisible ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
-            El procedimiento `spx_ObtenerCaberaVentaParaRegistroOTwb` no devolvio la sucursal.
+            La API de cabecera no devolvio la sucursal.
           </div>
         ) : null}
         {submitError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{submitError}</div> : null}
         {success ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-600">{success}</div> : null}
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={() => navigate(-1)} disabled={mutation.isPending}>
+          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={() => navigate(-1)} disabled={mutation.isPending || isPrevalidating}>
             {success ? 'Volver' : 'Cancelar'}
           </Button>
-          <Button className="w-full sm:w-auto" type="submit" disabled={mutation.isPending || cabeceraQuery.isLoading || geoLoading || calibrationBusy}>
-            {mutation.isPending ? 'Guardando...' : 'Registrar OT'}
+          <Button
+            className="w-full sm:w-auto"
+            type="submit"
+            disabled={mutation.isPending || cabeceraQuery.isLoading || geoLoading || calibrationBusy || isPrevalidating}
+          >
+            {isPrevalidating ? 'Validando...' : mutation.isPending ? 'Guardando...' : 'Registrar OT'}
           </Button>
         </div>
       </form>
@@ -794,10 +926,10 @@ const RegistrarOTAgendaPage = () => {
         <p className="font-semibold text-rose-700">ASEGURESE DE ESTAR EN LA UBICACION EXACTA</p>
         <p className="mt-2 text-slate-600">Si no esta exactamente en el domicilio correcto, no continue.</p>
         <div className="mt-6 flex justify-end gap-3">
-          <Button type="button" variant="secondary" onClick={() => setConfirmModalOpen(false)} disabled={calibrationBusy}>
+          <Button type="button" variant="secondary" onClick={() => setConfirmModalOpen(false)} disabled={calibrationBusy || isPrevalidating}>
             Cancelar
           </Button>
-          <Button type="button" onClick={runCalibrationAndSubmit} disabled={calibrationBusy}>
+          <Button type="button" onClick={runCalibrationAndSubmit} disabled={calibrationBusy || isPrevalidating}>
             Estoy en la ubicacion
           </Button>
         </div>

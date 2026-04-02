@@ -1,9 +1,9 @@
 import { useMemo, useState } from 'react'
 import { useQueries, useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/common/Button'
 import Field from '../components/common/Field'
-import { fetchSupervisorUltimoEstadoDia, validateVentaYDetalle } from '../api/otApi'
+import { fetchSupervisorUltimoEstadoDia, validateCuadreRuta, validateExisteCierreAlmacen, validateVentaYDetalle } from '../api/otApi'
 import { useAuth } from '../context/AuthContext'
 import type { OtSummary } from '../types/ot'
 import { todayISO } from '../utils/dates'
@@ -23,6 +23,18 @@ const readString = (row: OtSummary, keys: string[]): string => {
   return typeof value === 'string' ? value : String(value)
 }
 
+const readIntegerString = (row: OtSummary, keys: string[]): string => {
+  const value = readValue(row, keys)
+  if (value === undefined || value === null || value === '') return ''
+  if (typeof value === 'number' && Number.isFinite(value)) return String(Math.trunc(value))
+  if (typeof value === 'string') {
+    const normalized = value.trim()
+    if (!/^\d+$/.test(normalized)) return ''
+    return String(Number(normalized))
+  }
+  return ''
+}
+
 const readBoolean = (row: OtSummary, keys: string[]): boolean | null => {
   const value = readValue(row, keys)
   if (value === undefined || value === null || value === '') return null
@@ -37,11 +49,31 @@ const readBoolean = (row: OtSummary, keys: string[]): boolean | null => {
 }
 
 const getClienteNro = (row: OtSummary): string => {
-  return readString(row, ['cliente_nro', 'Cliente_Nro', 'clienteNro', 'cliente', 'Cliente'])
+  return readIntegerString(row, [
+    'cliente_nro',
+    'Cliente_Nro',
+    'clienteNro',
+    'ClienteNro',
+    'nroCliente',
+    'NroCliente',
+    'codigoCliente',
+    'CodigoCliente',
+  ])
 }
 
 const getOtCodigo = (row: OtSummary): string => {
-  return readString(row, ['ot', 'OT', 'ordenTrabajo', 'OrdenTrabajo', 'codigo', 'Codigo'])
+  return readIntegerString(row, [
+    'ot',
+    'OT',
+    'ordenTrabajo',
+    'OrdenTrabajo',
+    'numeroOrden',
+    'NumeroOrden',
+    'nroOT',
+    'NroOT',
+    'codigo',
+    'Codigo',
+  ])
 }
 
 const getEstado = (row: OtSummary): string => {
@@ -86,7 +118,9 @@ const getTor = (row: OtSummary): string => {
 
 const getClienteLabel = (row: OtSummary): string => {
   const cliente = getClienteNro(row).trim()
-  return cliente || 'SIN CLIENTE'
+  if (cliente) return cliente
+  const clienteNombre = readString(row, ['cliente', 'Cliente', 'nombreCliente', 'NombreCliente']).trim()
+  return clienteNombre || 'SIN CLIENTE'
 }
 
 const getGrupo = (row: OtSummary): string => {
@@ -146,6 +180,10 @@ const buildVentaValidationKey = (fecha: string, ot: string, clienteNro: string):
   return `${normalizeToISODate(fecha)}|${ot.trim()}|${clienteNro.trim()}`
 }
 
+const buildRegistroBloqueoKey = (fecha: string, idRuta: string, idSucursal: string): string => {
+  return `${normalizeToISODate(fecha)}|${idRuta.trim()}|${idSucursal.trim()}`
+}
+
 const hasVentaForRow = (row: OtSummary, fechaFiltro: string): boolean => {
   const clienteFila = getClienteNro(row).trim()
   const otFila = getOtCodigo(row).trim()
@@ -182,12 +220,14 @@ const hasVentaForRow = (row: OtSummary, fechaFiltro: string): boolean => {
 
 const OtDashboardPage = () => {
   const navigate = useNavigate()
+  const location = useLocation()
   const { usuario, roleName } = useAuth()
   const [fecha, setFecha] = useState(todayISO())
   const [navError, setNavError] = useState<string | null>(null)
+  const refreshToken = (location.state as { refreshToken?: number } | null)?.refreshToken ?? 0
 
   const query = useQuery({
-    queryKey: ['ot-dashboard-lista', fecha, usuario?.idUsuario ?? 0, roleName ?? ''],
+    queryKey: ['ot-dashboard-lista', fecha, usuario?.idUsuario ?? 0, roleName ?? '', refreshToken],
     queryFn: () =>
       fetchSupervisorUltimoEstadoDia({
         fecha,
@@ -195,6 +235,13 @@ const OtDashboardPage = () => {
         tecnico: usuario?.nombre,
         rol: roleName || undefined,
       }),
+  })
+
+  const cierreAgendaQuery = useQuery({
+    queryKey: ['ot-dashboard-validar-cierre-agenda', fecha],
+    queryFn: () => validateExisteCierreAlmacen({ fecha }),
+    staleTime: 60_000,
+    retry: 1,
   })
 
   const rows = query.data ?? []
@@ -249,11 +296,78 @@ const OtDashboardPage = () => {
     return map
   }, [validationTargets, ventaValidationQueries])
 
+  const bloqueoTargets = useMemo(() => {
+    const unique = new Map<string, { key: string; fecha: string; idRuta: number; idSucursal: number | null }>()
+    for (const row of displayRows) {
+      const idRutaRaw = getNumericString(row, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta', 'id_grupo', 'Id_Grupo', 'idGrupo', 'IdGrupo'])
+      if (!idRutaRaw) continue
+      const idRuta = Number(idRutaRaw)
+      if (!Number.isFinite(idRuta) || idRuta <= 0) continue
+
+      const idSucursalRaw = getNumericString(row, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal'])
+      const idSucursalParsed = idSucursalRaw ? Number(idSucursalRaw) : null
+      const fechaFila = getFecha(row).trim() || fecha
+      const key = buildRegistroBloqueoKey(fechaFila, String(idRuta), idSucursalRaw)
+
+      if (!unique.has(key)) {
+        unique.set(key, {
+          key,
+          fecha: fechaFila,
+          idRuta,
+          idSucursal: idSucursalParsed !== null && Number.isFinite(idSucursalParsed) && idSucursalParsed > 0 ? idSucursalParsed : null,
+        })
+      }
+    }
+    return Array.from(unique.values())
+  }, [displayRows, fecha])
+
+  const bloqueoQueries = useQueries({
+    queries: bloqueoTargets.map((target) => ({
+      queryKey: ['ot-dashboard-validar-bloqueo-registro', target.key],
+      queryFn: async () => {
+        const [cierreAgenda, hasCuadre] = await Promise.all([
+          validateExisteCierreAlmacen({
+            fecha: target.fecha,
+          }),
+          validateCuadreRuta({
+            idRuta: target.idRuta,
+            fecha: target.fecha,
+          }),
+        ])
+        return { hasCierre: cierreAgenda.bloqueado, hasCuadre }
+      },
+      staleTime: 60_000,
+      retry: 1,
+    })),
+  })
+
+  const bloqueoByKey = useMemo(() => {
+    const map = new Map<string, { hasCierre: boolean; hasCuadre: boolean; isLoading: boolean; isError: boolean }>()
+    for (let index = 0; index < bloqueoTargets.length; index += 1) {
+      const target = bloqueoTargets[index]
+      const queryState = bloqueoQueries[index]
+      map.set(target.key, {
+        hasCierre: queryState.data?.hasCierre ?? false,
+        hasCuadre: queryState.data?.hasCuadre ?? false,
+        isLoading: queryState.isLoading || queryState.isFetching,
+        isError: queryState.isError,
+      })
+    }
+    return map
+  }, [bloqueoQueries, bloqueoTargets])
+
   const errorMessage =
     query.isError && query.error instanceof Error && query.error.message
       ? query.error.message
       : query.isError
         ? 'No se pudo cargar el listado OT.'
+        : null
+
+  const cierreAgendaErrorMessage =
+    cierreAgendaQuery.isError && cierreAgendaQuery.error instanceof Error && cierreAgendaQuery.error.message
+      ? cierreAgendaQuery.error.message
+      : cierreAgendaQuery.isError
+        ? 'No se pudo validar el cierre de almacen.'
         : null
 
   return (
@@ -281,6 +395,12 @@ const OtDashboardPage = () => {
           {navError ? (
             <div className="mb-4 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{navError}</div>
           ) : null}
+          {cierreAgendaErrorMessage ? (
+            <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              No se pudo validar cierre/cuadre con el backend. Verifica que la API nueva este levantada en el puerto correcto.
+              {` Detalle: ${cierreAgendaErrorMessage}`}
+            </div>
+          ) : null}
           {errorMessage ? (
             <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{errorMessage}</div>
           ) : displayRows.length === 0 ? (
@@ -303,6 +423,18 @@ const OtDashboardPage = () => {
                 const validationError = validationState?.isError ?? false
                 const isValidatingDetalle = validationState?.isLoading ?? false
                 const detalleYaRegistrado = validationState?.hasDetalle ?? false
+                const idRuta = getNumericString(row, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta', 'id_grupo', 'Id_Grupo', 'idGrupo', 'IdGrupo'])
+                const idSucursal = getNumericString(row, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal'])
+                const bloqueoKey = buildRegistroBloqueoKey(fechaFila, idRuta, idSucursal)
+                const bloqueoState = bloqueoByKey.get(bloqueoKey)
+                const isCheckingBloqueo = bloqueoState?.isLoading ?? false
+                const bloqueoError = bloqueoState?.isError ?? false
+                const hasCierre = bloqueoState?.hasCierre ?? false
+                const hasCuadre = bloqueoState?.hasCuadre ?? false
+                const hasCierreGlobal = cierreAgendaQuery.data?.bloqueado ?? false
+                const isCheckingCierreGlobal = cierreAgendaQuery.isLoading || cierreAgendaQuery.isFetching
+                const hasCierreGlobalError = cierreAgendaQuery.isError
+                const registroBloqueado = hasCierreGlobal || hasCierre || hasCuadre || hasCierreGlobalError || bloqueoError
 
                 return (
                   <article key={`${ot || 'ot'}-${clienteNro || 'cliente'}-${index}`} className="bento-tile p-3 sm:p-4">
@@ -331,18 +463,32 @@ const OtDashboardPage = () => {
                       <div className="mt-5 grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <Button
                           type="button"
-                          disabled={isValidatingVenta || ventaYaRegistrada}
+                          disabled={isValidatingVenta || isCheckingCierreGlobal || isCheckingBloqueo || ventaYaRegistrada || registroBloqueado}
                           title={
-                            isValidatingVenta
-                              ? 'Validando venta registrada...'
+                            isCheckingCierreGlobal
+                              ? 'Validando cierre de agenda...'
+                              : hasCierreGlobal
+                                ? cierreAgendaQuery.data?.mensaje || 'Existe cierre de almacen para la fecha seleccionada.'
+                              : hasCierreGlobalError
+                                ? 'No se pudo validar el cierre de almacen. Intente nuevamente o revise el servicio.'
+                              : isCheckingBloqueo
+                                ? 'Validando cierre/cuadre...'
+                              : bloqueoError
+                                ? 'No se pudo validar cierre o cuadre para la ruta. Intente nuevamente o revise el servicio.'
+                              : hasCierre
+                                ? 'La ruta ya tiene cierre de almacen.'
+                              : hasCuadre
+                                ? 'La ruta ya realizo cuadre.'
+                              : isValidatingVenta
+                                ? 'Validando venta registrada...'
                               : ventaYaRegistrada
                                 ? 'Ya existe registro en tbl_venta/tbl_codigoventa para esta fila.'
-                                : validationError
-                                  ? 'No se pudo validar venta por API en este intento.'
-                                  : 'Registrar OT'
+                              : validationError
+                                ? 'No se pudo validar venta por API en este intento.'
+                              : 'Registrar OT'
                           }
                           onClick={() => {
-                            if (isValidatingVenta || ventaYaRegistrada) return
+                            if (isValidatingVenta || isCheckingCierreGlobal || isCheckingBloqueo || ventaYaRegistrada || registroBloqueado) return
 
                             const ot = getOtCodigo(row).trim()
                             const tor = getTor(row).trim()
@@ -370,40 +516,100 @@ const OtDashboardPage = () => {
                                 grupo,
                                 tecnicoNombre,
                                 idVendedor: getNumericString(row, ['id_vendedor', 'Id_Vendedor', 'idVendedor', 'IdVendedor']),
-                                idRuta: getNumericString(row, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta']),
+                                idRuta: idRuta || getNumericString(row, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta']),
                                 idTipoServicio: getNumericString(row, ['id_tiposervicio', 'Id_TipoServicio', 'idTipoServicio', 'IdTipoServicio']),
-                                idSucursal: getNumericString(row, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal']),
+                                idSucursal: idSucursal || getNumericString(row, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal']),
                                 rowData: row,
                               },
                             })
                           }}
                         >
-                          {isValidatingVenta ? 'Validando...' : ventaYaRegistrada ? 'OT Registrada' : 'Registrar OT'}
+                          {isCheckingCierreGlobal
+                            ? 'Validando...'
+                            : hasCierreGlobal
+                              ? 'Cierre Registrado'
+                            : hasCierreGlobalError
+                              ? 'Error Validacion'
+                            : isCheckingBloqueo
+                              ? 'Validando...'
+                            : bloqueoError
+                              ? 'Error Validacion'
+                            : hasCierre
+                              ? 'Cierre Registrado'
+                            : hasCuadre
+                              ? 'Cuadre Registrado'
+                            : isValidatingVenta
+                              ? 'Validando...'
+                            : ventaYaRegistrada
+                              ? 'OT Registrada'
+                              : 'Registrar OT'}
                         </Button>
 
                         <Button
                           type="button"
-                          disabled={isValidatingDetalle || detalleYaRegistrado}
+                          disabled={isValidatingDetalle || isCheckingCierreGlobal || isCheckingBloqueo || !ventaYaRegistrada || detalleYaRegistrado || registroBloqueado}
                           title={
-                            isValidatingDetalle
-                              ? 'Validando detalle en codigo venta...'
+                            isCheckingCierreGlobal
+                              ? 'Validando cierre de agenda...'
+                              : hasCierreGlobal
+                                ? cierreAgendaQuery.data?.mensaje || 'Existe cierre de almacen para la fecha seleccionada.'
+                              : hasCierreGlobalError
+                                ? 'No se pudo validar el cierre de almacen.'
+                              : isCheckingBloqueo
+                                ? 'Validando cierre/cuadre...'
+                              : bloqueoError
+                                ? 'No se pudo validar cierre o cuadre para la ruta.'
+                              : hasCierre
+                                ? 'La ruta ya tiene cierre de almacen.'
+                              : hasCuadre
+                                ? 'La ruta ya realizo cuadre.'
+                              : isValidatingDetalle
+                                ? 'Validando detalle en codigo venta...'
+                              : !ventaYaRegistrada
+                                ? 'Primero debes registrar la OT.'
                               : detalleYaRegistrado
                                 ? 'Ya existe detalle en tbl_codigoventa para esta fila.'
                                 : 'Registrar detalle'
                           }
                           onClick={() => {
-                            if (isValidatingDetalle || detalleYaRegistrado) return
+                            if (isValidatingDetalle || isCheckingCierreGlobal || isCheckingBloqueo || !ventaYaRegistrada || detalleYaRegistrado || registroBloqueado) return
                             setNavError(null)
                             navigate('/ot/RegistrarOrdenAgenda_Detalle', {
                               state: {
                                 numeroOrden: ot,
                                 clienteNro,
                                 fecha: fechaFila,
+                                tor,
+                                grupo: getGrupo(row).trim(),
+                                tecnicoNombre: getTecnicoNombre(row).trim() || (usuario?.nombre ?? '').trim(),
+                                idRuta,
+                                idSucursal,
+                                rowData: row,
                               },
                             })
                           }}
                         >
-                          {isValidatingDetalle ? 'Validando...' : detalleYaRegistrado ? 'Detalle Registrado' : 'Registrar Detalle'}
+                          {isCheckingCierreGlobal
+                            ? 'Validando...'
+                            : hasCierreGlobal
+                              ? 'Cierre Registrado'
+                            : hasCierreGlobalError
+                              ? 'Error Validacion'
+                            : isCheckingBloqueo
+                              ? 'Validando...'
+                            : bloqueoError
+                              ? 'Error Validacion'
+                            : hasCierre
+                              ? 'Cierre Registrado'
+                            : hasCuadre
+                              ? 'Cuadre Registrado'
+                            : isValidatingDetalle
+                              ? 'Validando...'
+                            : !ventaYaRegistrada
+                              ? 'Registrar OT Primero'
+                            : detalleYaRegistrado
+                              ? 'Detalle Registrado'
+                              : 'Registrar Detalle'}
                         </Button>
                       </div>
                     </div>

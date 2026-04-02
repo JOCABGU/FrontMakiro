@@ -1,3 +1,4 @@
+import axios from 'axios'
 import api from './http'
 import { normalizeArrayResponse } from './apiResponse'
 import type {
@@ -16,6 +17,30 @@ import type {
 import { getSessionStorage } from '../utils/storage'
 
 type UnknownRecord = Record<string, unknown>
+type RegistroAgendaValidacionApi = {
+  bloqueado?: boolean
+  mensaje?: string
+  codigoBloqueo?: string
+  cierreAlmacenBloqueado?: boolean
+  cierrePrPdBloqueado?: boolean
+  movimientosBloqueados?: boolean
+}
+
+export type OtDetalleMaterialPayload = {
+  idProducto: number
+  idTipoMaterial: number
+  serie?: string
+  chipId?: string
+  cantidad: number
+  entregado?: boolean
+}
+
+export type OtRegistrarDetallePayload = {
+  numeroOrden: string
+  idEstado?: number
+  observacion?: string
+  materiales: OtDetalleMaterialPayload[]
+}
 
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null
 
@@ -139,6 +164,12 @@ const sanitizeParams = (params?: OtListParams): Record<string, string | number |
   return Object.fromEntries(nextEntries) as Record<string, string | number | boolean>
 }
 
+const shouldFallbackToLegacyEndpoint = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) return false
+  const status = error.response?.status
+  return status === 404 || status === 405
+}
+
 export const fetchOtList = async (params?: OtListParams): Promise<OtSummary[]> => {
   const { data } = await api.get('/ot', {
     params: sanitizeParams(params),
@@ -243,6 +274,15 @@ export const fetchOtDetail = async (id: number): Promise<OtDetail> => {
   return { header: mapOtHeader(raw) }
 }
 
+export const fetchOtByNumero = async (numero: string): Promise<UnknownRecord> => {
+  const { data } = await api.get(`/ot/numero/${encodeURIComponent(numero.trim())}`)
+  const raw = unwrapData(data)
+  if (!isRecord(raw)) {
+    throw new Error('Respuesta de OT por numero sin formato esperado.')
+  }
+  return raw
+}
+
 export type OtMaterialTipo = 'instalados' | 'retirados' | 'excedentes' | 'cargo-usuario'
 
 export const fetchOtMateriales = async (id: number, tipo: OtMaterialTipo): Promise<OtMaterial[]> => {
@@ -253,6 +293,16 @@ export const fetchOtMateriales = async (id: number, tipo: OtMaterialTipo): Promi
 
 export const createOtRealizada = async (payload: OtRealizadaPayload): Promise<void> => {
   await api.post('/ot/realizada', payload)
+}
+
+export const createOtDetalle = async (payload: OtRegistrarDetallePayload): Promise<{ idVenta?: number; numeroOrden?: number }> => {
+  const { data } = await api.post('/ot/detalle-materiales', payload)
+  const raw = unwrapData(data)
+  if (!isRecord(raw)) return {}
+  return {
+    idVenta: readNumber(raw, ['idVenta', 'IdVenta', 'id_venta', 'Id_Venta']) ?? undefined,
+    numeroOrden: readNumber(raw, ['numeroOrden', 'NumeroOrden', 'ordenTrabajo', 'OrdenTrabajo']) ?? undefined,
+  }
 }
 
 export const updateOtDatos = async (id: number, payload: OtUpdatePayload): Promise<void> => {
@@ -486,13 +536,21 @@ export const validateVentaYDetalle = async (params: {
         ? `${compactLike[3]}/${compactLike[2]}/${compactLike[1]}`
         : rawFecha.slice(0, 10)
 
-  const { data } = await api.get('/ot/spx_ValidarVentaYDetallewb', {
-    params: {
-      fecha: fechaDdMmYyyy,
-      nroOT: params.ot.trim(),
-      numeroCliente: params.clienteNro.trim(),
-    },
-  })
+  const queryParams = {
+    fecha: fechaDdMmYyyy,
+    nroOT: params.ot.trim(),
+    numeroCliente: params.clienteNro.trim(),
+  }
+
+  let data: unknown
+  try {
+    const response = await api.get('/ot/venta/validar-detalle', { params: queryParams })
+    data = response.data
+  } catch (error) {
+    if (!shouldFallbackToLegacyEndpoint(error)) throw error
+    const response = await api.get('/ot/spx_ValidarVentaYDetallewb', { params: queryParams })
+    data = response.data
+  }
 
   const envelopeData = isRecord(data) && isRecord(data.data) ? data.data : data
   const payload = isRecord(envelopeData) ? envelopeData : {}
@@ -508,5 +566,211 @@ export const validateVentaYDetalle = async (params: {
   return {
     existeVenta,
     tieneDetalleEnCodigoVenta,
+  }
+}
+
+const toIsoDateParam = (value?: string): string => {
+  const raw = (value ?? '').trim()
+  if (!raw) return ''
+
+  const isoLike = raw.match(/^(\d{4})-(\d{2})-(\d{2})/)
+  if (isoLike) return `${isoLike[1]}-${isoLike[2]}-${isoLike[3]}`
+
+  const dmyLike = raw.match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (dmyLike) return `${dmyLike[3]}-${dmyLike[2]}-${dmyLike[1]}`
+
+  const parsed = new Date(raw)
+  if (Number.isNaN(parsed.getTime())) return raw
+
+  const year = String(parsed.getFullYear())
+  const month = String(parsed.getMonth() + 1).padStart(2, '0')
+  const day = String(parsed.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const coerceApiBoolean = (payload: unknown): boolean | null => {
+  const resolved = resolveVentaExistsDeep(payload)
+  if (resolved !== null) return resolved
+
+  if (payload === undefined || payload === null) return null
+  if (typeof payload === 'boolean') return payload
+  if (typeof payload === 'number') return payload !== 0
+  if (typeof payload === 'string') {
+    const normalized = payload.trim().toLowerCase()
+    if (!normalized) return null
+    if (['1', 'true', 'si', 's', 'yes', 'y', 'existe', 'cerrado', 'cerrada'].includes(normalized)) return true
+    if (['0', 'false', 'no', 'n', 'abierto', 'abierta'].includes(normalized)) return false
+  }
+
+  if (Array.isArray(payload)) {
+    if (payload.length === 0) return false
+    let sawNonEmptyObject = false
+    for (const item of payload) {
+      const itemResult = coerceApiBoolean(item)
+      if (itemResult !== null) return itemResult
+      if (isRecord(item) && Object.keys(item).length > 0) {
+        sawNonEmptyObject = true
+      }
+    }
+    return sawNonEmptyObject ? true : null
+  }
+
+  if (!isRecord(payload)) return null
+
+  const directKeys = [
+    'bloqueado',
+    'Bloqueado',
+    'existe',
+    'Existe',
+    'tieneCierre',
+    'TieneCierre',
+    'existeCierre',
+    'ExisteCierre',
+    'cierreAlmacenBloqueado',
+    'CierreAlmacenBloqueado',
+    'cierrePrPdBloqueado',
+    'CierrePrPdBloqueado',
+    'hayCierre',
+    'HayCierre',
+    'tieneCuadre',
+    'TieneCuadre',
+    'existeCuadre',
+    'ExisteCuadre',
+    'movimientosBloqueados',
+    'MovimientosBloqueados',
+    'hayCuadre',
+    'HayCuadre',
+    'cerrado',
+    'Cerrado',
+    'resultado',
+    'Resultado',
+    'data',
+    'Data',
+    'value',
+    'Value',
+  ]
+
+  for (const key of directKeys) {
+    if (!Object.prototype.hasOwnProperty.call(payload, key)) continue
+    const result = coerceApiBoolean(payload[key])
+    if (result !== null) return result
+  }
+
+  const total = readNumber(payload, ['total', 'Total', 'count', 'Count', 'cantidad', 'Cantidad'])
+  if (typeof total === 'number') return total > 0
+
+  const message = readString(payload, ['message', 'Message', 'mensaje', 'Mensaje']).trim().toLowerCase()
+  if (message) {
+    if (message.includes('no existe') || message.includes('sin cierre') || message.includes('sin cuadre')) return false
+    if (message.includes('existe') || message.includes('cierre') || message.includes('cuadre')) return true
+  }
+
+  for (const value of Object.values(payload)) {
+    const nested = coerceApiBoolean(value)
+    if (nested !== null) return nested
+  }
+
+  return null
+}
+
+export const validateExisteCierreAlmacen = async (params: {
+  fecha?: string
+}): Promise<{ bloqueado: boolean; mensaje: string }> => {
+  const queryParams: Record<string, string | number> = {}
+  if (typeof params.fecha === 'string' && params.fecha.trim()) {
+    const fecha = toIsoDateParam(params.fecha)
+    queryParams.fecha = fecha
+  }
+
+  const { data } = await api.get<{ data?: RegistroAgendaValidacionApi; message?: string }>('/ot/spx_ExisteCierreAlmacen', {
+    params: Object.keys(queryParams).length ? queryParams : undefined,
+  })
+
+  const payload = isRecord(data) && isRecord(data.data) ? (data.data as RegistroAgendaValidacionApi) : null
+  if (payload) {
+    const blocked =
+      payload.bloqueado === true ||
+      payload.cierreAlmacenBloqueado === true ||
+      payload.cierrePrPdBloqueado === true ||
+      payload.movimientosBloqueados === true
+    return {
+      bloqueado: blocked,
+      mensaje: String(payload.mensaje ?? data.message ?? '').trim(),
+    }
+  }
+
+  const resolved = coerceApiBoolean(data)
+  return {
+    bloqueado: resolved ?? false,
+    mensaje: isRecord(data) && typeof data.message === 'string' ? data.message : '',
+  }
+}
+
+export const validateCuadreRuta = async (params: {
+  idRuta: number
+  fecha?: string
+}): Promise<boolean> => {
+  const queryParams: Record<string, string | number> = {
+    idRuta: params.idRuta,
+  }
+  if (typeof params.fecha === 'string' && params.fecha.trim()) {
+    const fecha = toIsoDateParam(params.fecha)
+    queryParams.fecha = fecha
+  }
+
+  const { data } = await api.get('/cuadre/spx_ValidarCuadreRuta', {
+    params: queryParams,
+  })
+
+  const resolved = coerceApiBoolean(
+    isRecord(data) && Object.prototype.hasOwnProperty.call(data, 'data')
+      ? (data as Record<string, unknown>).data
+      : data
+  )
+  return resolved ?? false
+}
+
+export const fetchCabeceraVentaParaRegistroOtWb = async (params: {
+  clienteNro: number
+  ot: number
+  tor: string
+  grupo: string
+  tecnicoNombre: string
+}): Promise<UnknownRecord[]> => {
+  let data: unknown
+  try {
+    const response = await api.get('/ot/cabecera-venta/registro-otwb', { params })
+    data = response.data
+  } catch (error) {
+    if (!shouldFallbackToLegacyEndpoint(error)) throw error
+    const response = await api.get('/ot/spx_ObtenerCaberaVentaParaRegistroOTwb', { params })
+    data = response.data
+  }
+
+  if (Array.isArray(data)) return data as UnknownRecord[]
+  if (isRecord(data) && Array.isArray(data.data)) {
+    return data.data as UnknownRecord[]
+  }
+  if (isRecord(data)) return [data as UnknownRecord]
+  return []
+}
+
+type RegistrarVentaParaRegistroOtResult = {
+  data?: {
+    idVenta?: number
+    ordenTrabajo?: number
+  }
+}
+
+export const registrarVentaParaRegistroOtWb = async (
+  payload: Record<string, unknown>
+): Promise<RegistrarVentaParaRegistroOtResult> => {
+  try {
+    const response = await api.post('/ot/venta/registro-otwb', payload)
+    return response.data as RegistrarVentaParaRegistroOtResult
+  } catch (error) {
+    if (!shouldFallbackToLegacyEndpoint(error)) throw error
+    const response = await api.post('/ot/spx_RegistrarVentaParaRegistroOTwb', payload)
+    return response.data as RegistrarVentaParaRegistroOtResult
   }
 }

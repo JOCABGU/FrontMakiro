@@ -5,14 +5,14 @@ Frontend React + TypeScript para gestion operativa OT y administracion de privil
 ## Requisitos
 
 - Node.js 18+
-- Backend activo en `http://localhost:8181`
+- Backend activo en `http://localhost:9060`
 
 ## Variables de entorno
 
 Usa `.env` (o `.env.example`) con:
 
 ```bash
-VITE_API_URL=http://localhost:8181
+VITE_API_URL=http://localhost:9060
 ```
 
 ## Ejecucion
