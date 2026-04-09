@@ -19,6 +19,7 @@ import CuNoRealizadoCreatePage from '../pages/CuNoRealizadoCreatePage'
 import ConformacionCuadrillaPage from '../pages/ConformacionCuadrillaPage'
 import PrivilegiosPage from '../pages/admin/PrivilegiosPage'
 import ForbiddenPage from '../pages/ForbiddenPage'
+import PruebaPage from '../pages/PruebaPage'
 
 const AppRoutes = () => {
   const { defaultPrivatePath, isAuthenticated } = useAuth()
@@ -47,6 +48,7 @@ const AppRoutes = () => {
           <Route path="/supervisor/conformacion-cuadrilla/ver" element={<Navigate to="/supervisor/conformacion-cuadrilla" replace />} />
           <Route path="/supervisor/conformacion-cuadrilla/crear" element={<Navigate to="/supervisor/conformacion-cuadrilla" replace />} />
           <Route path="/supervisor/conformacion-cuadrilla/editar" element={<Navigate to="/supervisor/conformacion-cuadrilla" replace />} />
+          <Route path="/prueba" element={<PruebaPage />} />
           <Route element={<AdminRoute />}>
             <Route path="/admin/privilegios" element={<PrivilegiosPage />} />
           </Route>

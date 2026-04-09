@@ -1,5 +1,7 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
+import { inferPrincipalKeys } from '../../pages/principal'
+import type { NavigationItem } from '../../config/navigation'
 
 interface SidebarProps {
   isOpen?: boolean
@@ -7,8 +9,55 @@ interface SidebarProps {
 }
 
 const Sidebar = ({ isOpen = false, onClose }: SidebarProps) => {
-  const { visibleNavigationItems } = useAuth()
+  const { visibleNavigationItems, menusAsignados } = useAuth()
   const sidebarItems = visibleNavigationItems.filter((item) => item.showInSidebar !== false)
+
+  const resolveSidebarLabel = (item: NavigationItem): string => {
+    if (!item.sidebarLabelFromMenu) return item.label
+
+    const targetMenuIds = new Set([...(item.requiredAnyMenuIds ?? []), ...(item.requiredMenuIds ?? [])])
+    const targetMenuNames = new Set([...(item.requiredAnyMenuNames ?? []), ...(item.requiredMenuNames ?? [])].map((name) => name.toLowerCase()))
+    const targetPrincipalKeys = new Set([...(item.requiredAnyPageNames ?? []), ...(item.requiredPageNames ?? [])].map((key) => key.toLowerCase()))
+
+    const resolveLabelFromMenu = (menu: (typeof menusAsignados)[number]): string => {
+      const custom = menu.nombreSidebar?.trim()
+      if (custom) return custom
+      return menu.nombreMostrar ?? menu.nombre ?? item.label
+    }
+
+    if (targetMenuIds.size > 0) {
+      for (const menu of menusAsignados) {
+        if (!targetMenuIds.has(menu.idMenu)) continue
+        return resolveLabelFromMenu(menu)
+      }
+    }
+
+    if (targetMenuNames.size > 0) {
+      for (const menu of menusAsignados) {
+        const name = menu.nombre?.trim().toLowerCase()
+        if (!name || !targetMenuNames.has(name)) continue
+        return resolveLabelFromMenu(menu)
+      }
+    }
+
+    if (targetPrincipalKeys.size > 0) {
+      for (const menu of menusAsignados) {
+        const rawPages: string[] = []
+        if (menu.paginaAsociada?.trim()) rawPages.push(menu.paginaAsociada.trim())
+        for (const page of menu.paginasAsociadas ?? []) {
+          const value = page.trim()
+          if (!value) continue
+          rawPages.push(value)
+        }
+        const principals = inferPrincipalKeys(rawPages).map((key) => key.toLowerCase())
+        const hasMatch = principals.some((key) => targetPrincipalKeys.has(key))
+        if (!hasMatch) continue
+        return resolveLabelFromMenu(menu)
+      }
+    }
+
+    return item.label
+  }
 
   return (
     <>
@@ -52,7 +101,7 @@ const Sidebar = ({ isOpen = false, onClose }: SidebarProps) => {
                   }`
                 }
               >
-                {item.label}
+                {resolveSidebarLabel(item)}
               </NavLink>
             ))}
           </nav>

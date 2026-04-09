@@ -88,6 +88,11 @@ const normalizeEstado = (value: string): string => {
     .replace(/[\u0300-\u036f]/g, '')
 }
 
+const isEstadoFinalizado = (estado: string): boolean => {
+  const normalized = normalizeEstado(estado)
+  return normalized.includes('finalizado') || normalized.includes('finalizada')
+}
+
 const getEstadoBadgeClass = (estado: string): string => {
   const normalized = normalizeEstado(estado)
   if (normalized.includes('fallida')) {
@@ -246,14 +251,21 @@ const OtDashboardPage = () => {
 
   const rows = query.data ?? []
   const displayRows = useMemo(
-    () =>
-      rows.filter(
+    () => {
+      const filtered = rows.filter(
         (row) =>
           Boolean(getClienteNro(row).trim()) ||
           Boolean(getOtCodigo(row).trim()) ||
           Boolean(getEstado(row).trim()) ||
           Boolean(getTor(row).trim())
-      ),
+      )
+      return filtered.sort((a, b) => {
+        const aFinalizada = isEstadoFinalizado(getEstado(a))
+        const bFinalizada = isEstadoFinalizado(getEstado(b))
+        if (aFinalizada === bFinalizada) return 0
+        return aFinalizada ? 1 : -1
+      })
+    },
     [rows]
   )
 
@@ -485,7 +497,7 @@ const OtDashboardPage = () => {
                                 ? 'Ya existe registro en tbl_venta/tbl_codigoventa para esta fila.'
                               : validationError
                                 ? 'No se pudo validar venta por API en este intento.'
-                              : 'Registrar OT'
+                              : 'Finalizar OT'
                           }
                           onClick={() => {
                             if (isValidatingVenta || isCheckingCierreGlobal || isCheckingBloqueo || ventaYaRegistrada || registroBloqueado) return
@@ -540,9 +552,7 @@ const OtDashboardPage = () => {
                               ? 'Cuadre Registrado'
                             : isValidatingVenta
                               ? 'Validando...'
-                            : ventaYaRegistrada
-                              ? 'OT Registrada'
-                              : 'Registrar OT'}
+                            : 'Finalizar OT'}
                         </Button>
 
                         <Button
@@ -569,7 +579,7 @@ const OtDashboardPage = () => {
                                 ? 'Primero debes registrar la OT.'
                               : detalleYaRegistrado
                                 ? 'Ya existe detalle en tbl_codigoventa para esta fila.'
-                                : 'Registrar detalle'
+                                : 'Cargar Material'
                           }
                           onClick={() => {
                             if (isValidatingDetalle || isCheckingCierreGlobal || isCheckingBloqueo || !ventaYaRegistrada || detalleYaRegistrado || registroBloqueado) return
@@ -606,10 +616,10 @@ const OtDashboardPage = () => {
                             : isValidatingDetalle
                               ? 'Validando...'
                             : !ventaYaRegistrada
-                              ? 'Registrar OT Primero'
+                              ? 'Cargar Material'
                             : detalleYaRegistrado
-                              ? 'Detalle Registrado'
-                              : 'Registrar Detalle'}
+                              ? 'Cargar Material'
+                              : 'Cargar Material'}
                         </Button>
                       </div>
                     </div>

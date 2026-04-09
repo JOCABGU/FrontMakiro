@@ -11,8 +11,11 @@ export type NavigationItem = {
   requiredAnyMenuIds?: number[]
   requiredMenuNames?: string[]
   requiredAnyMenuNames?: string[]
+  requiredPageNames?: string[]
+  requiredAnyPageNames?: string[]
   adminOnly?: boolean
   showInSidebar?: boolean
+  sidebarLabelFromMenu?: boolean
 }
 
 export const navigationItems: NavigationItem[] = [
@@ -20,21 +23,18 @@ export const navigationItems: NavigationItem[] = [
     label: 'Gestion de Ordenes de Trabajo',
     to: '/ot',
     routePatterns: ['/ot'],
+    requiredAnyPageNames: ['OTPrincipal'],
     requiredAnyMenuIds: otModuleAccessMenuIds,
+    sidebarLabelFromMenu: true,
   },
   ...otActionItems.map((action) => ({
     label: action.label,
     to: action.to,
     routePatterns: action.routePatterns,
+    requiredAnyPageNames: action.requiredAnyPageNames,
     requiredAnyMenuIds: [action.requiredMenuId, OT_FULL_ACCESS_MENU_ID],
     showInSidebar: false,
   })),
-  {
-    label: 'Cargo Usuario No Realizado',
-    to: '/cu-no-realizado',
-    routePatterns: ['/cu-no-realizado', '/cu-no-realizado/nuevo', '/cu-no-realizado/:id'],
-    requiredMenuIds: [54],
-  },
   {
     label: 'Cuadrillas',
     to: '/supervisor/conformacion-cuadrilla',
@@ -44,14 +44,25 @@ export const navigationItems: NavigationItem[] = [
       '/supervisor/conformacion-cuadrilla/crear',
       '/supervisor/conformacion-cuadrilla/editar',
     ],
+    requiredAnyPageNames: ['CuadrillasPrincipal'],
     requiredAnyMenuNames: ['tsm_conformacioncuadrillas'],
     requiredAnyMenuIds: [1, 62],
+    sidebarLabelFromMenu: true,
   },
   {
     label: 'Pool de Privilegios',
     to: '/admin/privilegios',
     routePatterns: ['/admin/privilegios'],
+    requiredAnyPageNames: ['PrivilegiosPrincipal'],
     requiredAnyMenuNames: ['tsm_privilegios'],
     requiredAnyMenuIds: [3],
+    sidebarLabelFromMenu: true,
+  },
+  {
+    label: 'Prueba',
+    to: '/prueba',
+    routePatterns: ['/prueba'],
+    requiredAnyPageNames: ['PruebaPrincipal'],
+    sidebarLabelFromMenu: true,
   },
 ]

@@ -51,18 +51,20 @@ const Table = <T,>({
             {data.map((row, index) => (
               <div
                 key={index}
-                className={`space-y-2 p-3 ${isRowBlock ? 'rounded-2xl border border-brand-100/80 bg-white shadow-sm' : ''} ${rowClassName}`}
+                className={`space-y-2 overflow-hidden p-3 ${isRowBlock ? 'rounded-2xl border border-brand-100/80 bg-white shadow-sm' : ''} ${rowClassName}`}
               >
                 {columns
                   .filter((column) => !isActionColumn(column))
                   .map((column) =>
                     mobileShowHeaders ? (
-                      <div key={column.key} className="grid grid-cols-[minmax(96px,40%)_1fr] items-start gap-3">
+                      <div key={column.key} className="grid grid-cols-1 items-start gap-1.5 sm:grid-cols-[minmax(96px,40%)_minmax(0,1fr)] sm:gap-3">
                         <span className="text-xs font-semibold text-slate-500">{column.header}</span>
-                        <div className="break-words text-right text-sm font-medium text-slate-700">{renderValue(column, row)}</div>
+                        <div className="min-w-0 break-all text-left text-sm font-medium text-slate-700 [overflow-wrap:anywhere] sm:text-right">
+                          {renderValue(column, row)}
+                        </div>
                       </div>
                     ) : (
-                      <div key={column.key} className="break-words text-sm text-slate-700">
+                      <div key={column.key} className="min-w-0 break-all text-sm text-slate-700 [overflow-wrap:anywhere]">
                         {renderValue(column, row)}
                       </div>
                     )

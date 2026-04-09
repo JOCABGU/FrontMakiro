@@ -36,9 +36,37 @@ export const fetchTipoMaterial = async (tipoServicioId: number): Promise<Catalog
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
-export const fetchProductos = async (): Promise<CatalogItem[]> => {
+export const fetchProductos = async (rutaId?: number): Promise<CatalogItem[]> => {
+  // El backend actual expone un unico catalogo de productos por /catalogos/productos.
+  // rutaId se mantiene por compatibilidad de firma en el front.
+  void rutaId
   const { data } = await api.get('/catalogos/productos')
   return normalizeArrayResponse<CatalogItem>(data)
+}
+
+export const fetchProductosSinFungible = async (rutaId: number): Promise<CatalogItem[]> => {
+  // El endpoint legacy /TraerTodosLosProductos_SinFungibleWeb no existe en este backend.
+  // Se usa el catalogo general y el filtrado funcional ocurre en las validaciones de OT.
+  void rutaId
+  const { data } = await api.get('/catalogos/productos')
+  return normalizeArrayResponse<CatalogItem>(data)
+}
+
+export const fetchProductosCargoUsuario = async (): Promise<CatalogItem[]> => {
+  // El endpoint legacy /TraerTodosLosProductosPCargoUsuarioWeb no existe en este backend.
+  const { data } = await api.get('/catalogos/productos')
+  return normalizeArrayResponse<CatalogItem>(data)
+}
+
+export const buscarSerialCargoUsuario = async (params: {
+  serial?: string
+  chipId?: string
+  tipoCodigo: number
+}): Promise<CatalogItem[]> => {
+  // El backend actual no expone /catalogos/cargo-usuario/buscar.
+  // Validamos duplicidad al guardar via /ot/cargo-usuario.
+  void params
+  return []
 }
 
 export const fetchProductosMascara = async (): Promise<CatalogItem[]> => {

@@ -9,7 +9,7 @@ interface FormCardProps {
 
 const FormCard = ({ title, description, children, actions }: FormCardProps) => {
   return (
-    <div className="glass-panel p-6 sm:p-7">
+    <div className="glass-panel p-4 sm:p-6 lg:p-7">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="text-xl font-semibold text-slate-900">{title}</h3>

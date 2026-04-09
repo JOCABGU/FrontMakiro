@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { matchPath } from 'react-router-dom'
 import { navigationItems, type NavigationItem } from '../config/navigation'
+import { expandPrincipalPageNames } from '../pages/principal'
 import { fetchPermisos, login as loginRequest } from '../services/authApi'
 import { getApiErrorMessage, isAuthError, setUnauthorizedHandler } from '../services/httpClient'
 import { useSessionStore } from '../store/sessionStore'
@@ -72,6 +73,7 @@ const mapSessionToUser = (session: SessionData | null): UsuarioSesion | null => 
 }
 
 const normalizeMenuName = (value: string): string => value.trim().toLowerCase()
+const normalizePageName = (value: string): string => value.trim().toLowerCase()
 
 const resolveRoleData = (usuario: UsuarioSesion | null, permisos: PermisosUsuario | null): { roleName: string; roleId: number } => {
   const roleName = (permisos?.rol ?? usuario?.rol ?? '').trim()
@@ -243,6 +245,29 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     return names
   }, [menusAsignados])
 
+  const pageNamesAsignadas = useMemo(() => {
+    const rawPages: string[] = []
+    for (const menu of menusAsignados) {
+      if (menu?.paginaAsociada?.trim()) {
+        rawPages.push(menu.paginaAsociada.trim())
+      }
+      if (!menu?.paginasAsociadas?.length) continue
+      for (const pageName of menu.paginasAsociadas) {
+        const value = pageName.trim()
+        if (!value) continue
+        rawPages.push(value)
+      }
+    }
+    const pages = new Set<string>()
+    const expandedPages = expandPrincipalPageNames(rawPages)
+    for (const pageName of expandedPages) {
+      const normalized = normalizePageName(pageName)
+      if (!normalized) continue
+      pages.add(normalized)
+    }
+    return pages
+  }, [menusAsignados])
+
   const canAccessNavigationItem = useCallback(
     (item: NavigationItem): boolean => {
       const activeRoleId = toFiniteNumber(permisos?.idRol ?? usuario?.idRol ?? getSessionStorage()?.idRol)
@@ -252,6 +277,25 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
 
       if (!permisos) return false
       if (item.adminOnly && !administrador) return false
+      const hasPageRules = Boolean(item.requiredPageNames?.length || item.requiredAnyPageNames?.length)
+      const shouldEvaluatePageRules = hasPageRules && pageNamesAsignadas.size > 0
+      if (
+        shouldEvaluatePageRules &&
+        item.requiredPageNames?.length &&
+        !item.requiredPageNames.every((pageName) => pageNamesAsignadas.has(normalizePageName(pageName)))
+      ) {
+        return false
+      }
+      if (
+        shouldEvaluatePageRules &&
+        item.requiredAnyPageNames?.length &&
+        !item.requiredAnyPageNames.some((pageName) => pageNamesAsignadas.has(normalizePageName(pageName)))
+      ) {
+        return false
+      }
+      if (shouldEvaluatePageRules) {
+        return true
+      }
       if (item.requiredMenuIds?.length && !item.requiredMenuIds.every((idMenu) => menuIds.includes(idMenu))) return false
       if (item.requiredAnyMenuIds?.length && !item.requiredAnyMenuIds.some((idMenu) => menuIds.includes(idMenu))) return false
       if (
@@ -268,7 +312,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       }
       return true
     },
-    [administrador, menuIds, menuNamesAsignados, permisos, usuario]
+    [administrador, menuIds, menuNamesAsignados, pageNamesAsignadas, permisos, usuario]
   )
 
   const visibleNavigationItems = useMemo(

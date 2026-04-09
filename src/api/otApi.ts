@@ -42,6 +42,19 @@ export type OtRegistrarDetallePayload = {
   materiales: OtDetalleMaterialPayload[]
 }
 
+export type OtCargoUsuarioItemPayload = {
+  idProducto: number
+  serie?: string
+  chipId?: string
+  cantidad: number
+  existe?: string
+}
+
+export type OtCargoUsuarioPayload = {
+  numeroOrden: string
+  items: OtCargoUsuarioItemPayload[]
+}
+
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null
 
 const pickValue = (record: UnknownRecord, keys: string[]): unknown => {
@@ -302,6 +315,15 @@ export const createOtDetalle = async (payload: OtRegistrarDetallePayload): Promi
   return {
     idVenta: readNumber(raw, ['idVenta', 'IdVenta', 'id_venta', 'Id_Venta']) ?? undefined,
     numeroOrden: readNumber(raw, ['numeroOrden', 'NumeroOrden', 'ordenTrabajo', 'OrdenTrabajo']) ?? undefined,
+  }
+}
+
+export const createOtCargoUsuario = async (payload: OtCargoUsuarioPayload): Promise<{ guardados?: number }> => {
+  const { data } = await api.post('/ot/cargo-usuario', payload)
+  const raw = unwrapData(data)
+  if (!isRecord(raw)) return {}
+  return {
+    guardados: readNumber(raw, ['guardados', 'Guardados']) ?? undefined,
   }
 }
 
@@ -728,6 +750,28 @@ export const validateCuadreRuta = async (params: {
       : data
   )
   return resolved ?? false
+}
+
+export const fetchSaldoRuta = async (params: {
+  idRuta: number
+  fecha?: string
+  idSucursal?: number
+}): Promise<UnknownRecord[]> => {
+  const queryParams: Record<string, string | number> = {
+    idRuta: params.idRuta,
+  }
+  if (typeof params.fecha === 'string' && params.fecha.trim()) {
+    const fecha = toIsoDateParam(params.fecha)
+    queryParams.fecha = fecha
+  }
+  if (typeof params.idSucursal === 'number' && Number.isFinite(params.idSucursal) && params.idSucursal > 0) {
+    queryParams.idSucursal = params.idSucursal
+  }
+
+  const { data } = await api.get('/ot/spx_ObtenerSaldoRuta', {
+    params: queryParams,
+  })
+  return normalizeArrayResponse<UnknownRecord>(data)
 }
 
 export const fetchCabeceraVentaParaRegistroOtWb = async (params: {

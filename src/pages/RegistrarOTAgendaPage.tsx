@@ -234,10 +234,28 @@ const RegistrarOTAgendaPage = () => {
     return cabeceraRows[0] ?? null
   }, [cabeceraRows])
 
+  const shouldFetchOtDetailByNumero = useMemo(() => {
+    if (!otRaw) return false
+    const faltanParamsCabecera = !(clienteNro && ot && tor && tecnicoNombre)
+    if (faltanParamsCabecera) return true
+    if (cabeceraQuery.isError) return true
+    if (!cabeceraQuery.isLoading && cabeceraRows.length === 0) return true
+    return false
+  }, [
+    cabeceraQuery.isError,
+    cabeceraQuery.isLoading,
+    cabeceraRows.length,
+    clienteNro,
+    ot,
+    otRaw,
+    tecnicoNombre,
+    tor,
+  ])
+
   const otDetailQuery = useQuery({
     queryKey: ['ot-por-numero', otRaw],
     queryFn: () => fetchOtByNumero(otRaw),
-    enabled: Boolean(otRaw),
+    enabled: shouldFetchOtDetailByNumero,
     retry: false,
   })
   const otDetailRow = otDetailQuery.data ?? null
