@@ -10,6 +10,7 @@ export interface AuthMeResponse {
   rol: string
   idRol: number
   idSucursal: number
+  hostName?: string
 }
 
 export interface Sucursal {

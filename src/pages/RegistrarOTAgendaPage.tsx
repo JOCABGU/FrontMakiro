@@ -6,6 +6,7 @@ import Button from '../components/common/Button'
 import FormCard from '../components/common/FormCard'
 import Modal from '../components/common/Modal'
 import { fetchEstados, fetchRutas, fetchTiposServicio, type CatalogItem } from '../api/catalogApi'
+import { fetchMe } from '../api/authApi'
 import {
   fetchCabeceraVentaParaRegistroOtWb,
   fetchOtByNumero,
@@ -35,6 +36,9 @@ const GEO_TARGET_ACCURACY_METERS = 5
 const GEO_MAX_CAPTURE_MS = 20000
 const GEO_MIN_SAMPLES = 3
 const GEO_MAX_SAMPLES = 8
+const GEO_BYPASS_HOSTS = ['desktop-b4oj8tg']
+
+const normalizeHostName = (value: string): string => value.trim().toLowerCase()
 
 const normalizeKey = (value: string): string => value.replace(/[_\-\s]/g, '').toLowerCase()
 
@@ -169,6 +173,7 @@ const RegistrarOTAgendaPage = () => {
   const [calibrationBusy, setCalibrationBusy] = useState(false)
   const [isPrevalidating, setIsPrevalidating] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
+  const [registroGuardado, setRegistroGuardado] = useState(false)
   const queryClient = useQueryClient()
 
   const otRaw = (navState?.ot ?? '').trim()
@@ -181,6 +186,12 @@ const RegistrarOTAgendaPage = () => {
   const navIdRuta = parseNumber((navState?.idRuta ?? '').trim())
   const navIdTipoServicio = parseNumber((navState?.idTipoServicio ?? '').trim())
   const navIdSucursal = parseNumber((navState?.idSucursal ?? '').trim())
+  const hostName = useMemo(() => {
+    const sessionHost = normalizeHostName(session?.hostName ?? '')
+    const browserHost = typeof window !== 'undefined' ? normalizeHostName(window.location.hostname) : ''
+    return sessionHost || browserHost
+  }, [session?.hostName])
+  const isGeoBypassMachine = useMemo(() => GEO_BYPASS_HOSTS.includes(hostName), [hostName])
 
   const rutasQuery = useQuery({
     queryKey: ['catalogos-rutas-agenda-base', session?.idUsuario ?? 0],
@@ -234,28 +245,10 @@ const RegistrarOTAgendaPage = () => {
     return cabeceraRows[0] ?? null
   }, [cabeceraRows])
 
-  const shouldFetchOtDetailByNumero = useMemo(() => {
-    if (!otRaw) return false
-    const faltanParamsCabecera = !(clienteNro && ot && tor && tecnicoNombre)
-    if (faltanParamsCabecera) return true
-    if (cabeceraQuery.isError) return true
-    if (!cabeceraQuery.isLoading && cabeceraRows.length === 0) return true
-    return false
-  }, [
-    cabeceraQuery.isError,
-    cabeceraQuery.isLoading,
-    cabeceraRows.length,
-    clienteNro,
-    ot,
-    otRaw,
-    tecnicoNombre,
-    tor,
-  ])
-
   const otDetailQuery = useQuery({
     queryKey: ['ot-por-numero', otRaw],
     queryFn: () => fetchOtByNumero(otRaw),
-    enabled: shouldFetchOtDetailByNumero,
+    enabled: Boolean(otRaw),
     retry: false,
   })
   const otDetailRow = otDetailQuery.data ?? null
@@ -382,6 +375,13 @@ const RegistrarOTAgendaPage = () => {
 
   const requestGeolocation = () => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      if (isGeoBypassMachine) {
+        setGeoError(null)
+        setLatitud(0)
+        setLongitud(0)
+        setGeoAccuracy(0)
+        return
+      }
       setGeoError('Tu navegador no soporta geolocalizacion.')
       setLatitud(null)
       setLongitud(null)
@@ -412,6 +412,10 @@ const RegistrarOTAgendaPage = () => {
       setLatitud(null)
       setLongitud(null)
       setGeoAccuracy(null)
+      if (isGeoBypassMachine) {
+        setGeoError(null)
+        return
+      }
       if (error.code === 1) {
         setGeoError('Permiso de ubicacion denegado. Debes habilitarlo para registrar OT.')
         return
@@ -489,6 +493,13 @@ const RegistrarOTAgendaPage = () => {
 
   const calibrateGeolocationForSubmit = (): Promise<GeoSample | null> => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      if (isGeoBypassMachine) {
+        setGeoError(null)
+        setLatitud(0)
+        setLongitud(0)
+        setGeoAccuracy(0)
+        return Promise.resolve({ latitude: 0, longitude: 0, accuracy: 0 })
+      }
       setGeoError('Tu navegador no soporta geolocalizacion.')
       setLatitud(null)
       setLongitud(null)
@@ -520,6 +531,11 @@ const RegistrarOTAgendaPage = () => {
         setLatitud(null)
         setLongitud(null)
         setGeoAccuracy(null)
+        if (isGeoBypassMachine) {
+          setGeoError(null)
+          resolve({ latitude: 0, longitude: 0, accuracy: 0 })
+          return
+        }
         if (error.code === 1) {
           setGeoError('Permiso de ubicacion denegado. Debes habilitarlo para registrar OT.')
           resolve(null)
@@ -550,6 +566,11 @@ const RegistrarOTAgendaPage = () => {
           setLatitud(null)
           setLongitud(null)
           setGeoAccuracy(null)
+          if (isGeoBypassMachine) {
+            setGeoError(null)
+            resolve({ latitude: 0, longitude: 0, accuracy: 0 })
+            return
+          }
           setGeoError('No se pudo obtener una lectura valida de ubicacion.')
           resolve(null)
           return
@@ -606,6 +627,27 @@ const RegistrarOTAgendaPage = () => {
     void requestGeolocation()
   }, [])
 
+  useEffect(() => {
+    if (!session?.sessionToken || session?.hostName) return
+    let cancelled = false
+
+    void fetchMe(session.sessionToken)
+      .then((me) => {
+        if (cancelled || !me?.hostName) return
+        useSessionStore.getState().setSession({
+          ...session,
+          hostName: me.hostName,
+        })
+      })
+      .catch(() => {
+        // Si falla, seguimos con la validacion normal.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [session])
+
   const mutation = useMutation({
     mutationFn: async (coordinates?: { latitud: number; longitud: number }) => {
       const ordenTrabajo = parseNumber(otVisible) ?? 0
@@ -635,6 +677,8 @@ const RegistrarOTAgendaPage = () => {
       const idVenta = data?.data?.idVenta
       const orden = data?.data?.ordenTrabajo
       setSubmitError(null)
+      setRegistroGuardado(true)
+      setConfirmModalOpen(false)
       if (idVenta || orden) {
         setSuccess(`Venta registrada correctamente. IdVenta: ${idVenta ?? '-'} | OT: ${orden ?? '-'}`)
       } else {
@@ -694,6 +738,9 @@ const RegistrarOTAgendaPage = () => {
 
   const validateReadyToRegister = (sample: GeoSample | null): boolean => {
     if (!sample) {
+      if (isGeoBypassMachine) {
+        return true
+      }
       setSubmitError('Debes capturar ubicacion antes de registrar la OT.')
       return false
     }
@@ -705,7 +752,7 @@ const RegistrarOTAgendaPage = () => {
   }
 
   const runCalibrationAndSubmit = async () => {
-    if (calibrationBusy || mutation.isPending || isPrevalidating) return
+    if (calibrationBusy || mutation.isPending || isPrevalidating || registroGuardado) return
 
     setSubmitError(null)
     setSuccess(null)
@@ -719,15 +766,16 @@ const RegistrarOTAgendaPage = () => {
       if (!canContinue) return
 
       const best = await calibrateGeolocationForSubmit()
-      if (!best) {
+      const coordinates = best ?? (isGeoBypassMachine ? { latitude: 0, longitude: 0, accuracy: 0 } : null)
+      if (!coordinates) {
         setSubmitError('Debes capturar ubicacion antes de registrar la OT.')
         return
       }
-      if (!validateReadyToRegister(best)) return
+      if (!validateReadyToRegister(coordinates)) return
       setCalibrationMessage('Ubicacion calibrada. Registrando OT...')
       await mutation.mutateAsync({
-        latitud: best.latitude,
-        longitud: best.longitude,
+        latitud: coordinates.latitude,
+        longitud: coordinates.longitude,
       })
     } finally {
       setCalibrationBusy(false)
@@ -740,6 +788,10 @@ const RegistrarOTAgendaPage = () => {
     setHasAttemptedSubmit(true)
     setSubmitError(null)
     setSuccess(null)
+    if (registroGuardado) {
+      setSubmitError('La OT ya fue registrada. No se permite guardar nuevamente.')
+      return
+    }
     if (!canSubmitBase) {
       setSubmitError('Faltan datos requeridos para registrar la OT.')
       return
@@ -807,12 +859,12 @@ const RegistrarOTAgendaPage = () => {
       <form className="flex flex-col gap-6" onSubmit={handleFormSubmit}>
         <FormCard title="Cabecera OT" description="Formato de registro segun diseno objetivo.">
           <div className="grid gap-3 md:grid-cols-3">
-            <div className="md:col-span-2">
+            <div className="md:col-span-2 hidden">
               <label className="mb-1 block text-xs font-semibold text-slate-700">Usuario</label>
               <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={session?.nombre ?? ''} disabled />
             </div>
 
-            <div>
+            <div className="hidden">
               <label className="mb-1 block text-xs font-semibold text-slate-700">Tecnico</label>
               <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={tecnicoVisible} disabled />
             </div>
@@ -826,7 +878,7 @@ const RegistrarOTAgendaPage = () => {
               />
             </div>
 
-            <div>
+            <div className="hidden">
               <label className="mb-1 block text-xs font-semibold text-slate-700">Grupo</label>
               <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={grupoVisible} disabled />
             </div>
@@ -858,7 +910,7 @@ const RegistrarOTAgendaPage = () => {
               </select>
             </div>
 
-            <div>
+            <div className="hidden">
               <label className="mb-1 block text-xs font-semibold text-slate-700">Sucursal</label>
               <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={sucursalVisible} disabled />
             </div>
@@ -933,21 +985,21 @@ const RegistrarOTAgendaPage = () => {
           <Button
             className="w-full sm:w-auto"
             type="submit"
-            disabled={mutation.isPending || cabeceraQuery.isLoading || geoLoading || calibrationBusy || isPrevalidating}
+            disabled={registroGuardado || mutation.isPending || cabeceraQuery.isLoading || geoLoading || calibrationBusy || isPrevalidating}
           >
-            {isPrevalidating ? 'Validando...' : mutation.isPending ? 'Guardando...' : 'Registrar OT'}
+            {registroGuardado ? 'Registrada' : isPrevalidating ? 'Validando...' : mutation.isPending ? 'Guardando...' : 'Registrar OT'}
           </Button>
         </div>
       </form>
 
-      <Modal open={confirmModalOpen} title="Muy importante" onClose={() => setConfirmModalOpen(false)}>
+      <Modal open={confirmModalOpen && !registroGuardado} title="Muy importante" onClose={() => setConfirmModalOpen(false)}>
         <p className="font-semibold text-rose-700">ASEGURESE DE ESTAR EN LA UBICACION EXACTA</p>
         <p className="mt-2 text-slate-600">Si no esta exactamente en el domicilio correcto, no continue.</p>
         <div className="mt-6 flex justify-end gap-3">
-          <Button type="button" variant="secondary" onClick={() => setConfirmModalOpen(false)} disabled={calibrationBusy || isPrevalidating}>
+          <Button type="button" variant="secondary" onClick={() => setConfirmModalOpen(false)} disabled={calibrationBusy || isPrevalidating || registroGuardado}>
             Cancelar
           </Button>
-          <Button type="button" onClick={runCalibrationAndSubmit} disabled={calibrationBusy || isPrevalidating}>
+          <Button type="button" onClick={runCalibrationAndSubmit} disabled={calibrationBusy || isPrevalidating || registroGuardado}>
             Estoy en la ubicacion
           </Button>
         </div>

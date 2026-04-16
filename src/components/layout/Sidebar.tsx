@@ -1,6 +1,5 @@
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../../context/AuthContext'
-import { inferPrincipalKeys } from '../../pages/principal'
 import type { NavigationItem } from '../../config/navigation'
 
 interface SidebarProps {
@@ -11,13 +10,25 @@ interface SidebarProps {
 const Sidebar = ({ isOpen = false, onClose }: SidebarProps) => {
   const { visibleNavigationItems, menusAsignados } = useAuth()
   const sidebarItems = visibleNavigationItems.filter((item) => item.showInSidebar !== false)
+  const menuById = new Map(menusAsignados.map((menu) => [menu.idMenu, menu] as const))
+
+  const getMenuPages = (menu: (typeof menusAsignados)[number]): string[] => {
+    const pages: string[] = []
+    if (menu.paginaAsociada?.trim()) {
+      pages.push(menu.paginaAsociada.trim().toLowerCase())
+    }
+    for (const page of menu.paginasAsociadas ?? []) {
+      const value = page.trim()
+      if (!value) continue
+      pages.push(value.toLowerCase())
+    }
+    return pages
+  }
 
   const resolveSidebarLabel = (item: NavigationItem): string => {
     if (!item.sidebarLabelFromMenu) return item.label
 
-    const targetMenuIds = new Set([...(item.requiredAnyMenuIds ?? []), ...(item.requiredMenuIds ?? [])])
-    const targetMenuNames = new Set([...(item.requiredAnyMenuNames ?? []), ...(item.requiredMenuNames ?? [])].map((name) => name.toLowerCase()))
-    const targetPrincipalKeys = new Set([...(item.requiredAnyPageNames ?? []), ...(item.requiredPageNames ?? [])].map((key) => key.toLowerCase()))
+    const targetPages = new Set([...(item.requiredAnyPageNames ?? []), ...(item.requiredPageNames ?? [])].map((value) => value.toLowerCase()))
 
     const resolveLabelFromMenu = (menu: (typeof menusAsignados)[number]): string => {
       const custom = menu.nombreSidebar?.trim()
@@ -25,34 +36,13 @@ const Sidebar = ({ isOpen = false, onClose }: SidebarProps) => {
       return menu.nombreMostrar ?? menu.nombre ?? item.label
     }
 
-    if (targetMenuIds.size > 0) {
+    if (targetPages.size > 0) {
       for (const menu of menusAsignados) {
-        if (!targetMenuIds.has(menu.idMenu)) continue
-        return resolveLabelFromMenu(menu)
-      }
-    }
-
-    if (targetMenuNames.size > 0) {
-      for (const menu of menusAsignados) {
-        const name = menu.nombre?.trim().toLowerCase()
-        if (!name || !targetMenuNames.has(name)) continue
-        return resolveLabelFromMenu(menu)
-      }
-    }
-
-    if (targetPrincipalKeys.size > 0) {
-      for (const menu of menusAsignados) {
-        const rawPages: string[] = []
-        if (menu.paginaAsociada?.trim()) rawPages.push(menu.paginaAsociada.trim())
-        for (const page of menu.paginasAsociadas ?? []) {
-          const value = page.trim()
-          if (!value) continue
-          rawPages.push(value)
-        }
-        const principals = inferPrincipalKeys(rawPages).map((key) => key.toLowerCase())
-        const hasMatch = principals.some((key) => targetPrincipalKeys.has(key))
+        const hasMatch = getMenuPages(menu).some((page) => targetPages.has(page))
         if (!hasMatch) continue
-        return resolveLabelFromMenu(menu)
+
+        const parentMenu = menu.padre > 0 ? menuById.get(menu.padre) : undefined
+        return resolveLabelFromMenu(parentMenu ?? menu)
       }
     }
 
@@ -75,7 +65,6 @@ const Sidebar = ({ isOpen = false, onClose }: SidebarProps) => {
         <div className="bento-tile flex h-full flex-col gap-6 p-6">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">TigoStar</span>
               <h1 className="mt-2 text-2xl font-semibold text-slate-900">TIGO STAR</h1>
               <p className="mt-2 text-sm text-slate-600">Gestion operativa y seguimiento diario.</p>
             </div>

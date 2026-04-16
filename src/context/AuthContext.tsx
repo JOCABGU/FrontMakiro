@@ -11,7 +11,6 @@ import {
 import { useQueryClient } from '@tanstack/react-query'
 import { matchPath } from 'react-router-dom'
 import { navigationItems, type NavigationItem } from '../config/navigation'
-import { expandPrincipalPageNames } from '../pages/principal'
 import { fetchPermisos, login as loginRequest } from '../services/authApi'
 import { getApiErrorMessage, isAuthError, setUnauthorizedHandler } from '../services/httpClient'
 import { useSessionStore } from '../store/sessionStore'
@@ -49,17 +48,6 @@ type AuthContextValue = {
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined)
-const PRIVILEGIOS_ROUTE = '/admin/privilegios'
-const PRIVILEGIOS_ALLOWED_ROLE_ID = 4
-
-const toFiniteNumber = (value: unknown): number | null => {
-  if (typeof value === 'number' && Number.isFinite(value)) return value
-  if (typeof value === 'string') {
-    const parsed = Number(value)
-    if (Number.isFinite(parsed)) return parsed
-  }
-  return null
-}
 
 const mapSessionToUser = (session: SessionData | null): UsuarioSesion | null => {
   if (!session?.sessionToken) return null
@@ -72,7 +60,6 @@ const mapSessionToUser = (session: SessionData | null): UsuarioSesion | null => 
   }
 }
 
-const normalizeMenuName = (value: string): string => value.trim().toLowerCase()
 const normalizePageName = (value: string): string => value.trim().toLowerCase()
 
 const resolveRoleData = (usuario: UsuarioSesion | null, permisos: PermisosUsuario | null): { roleName: string; roleId: number } => {
@@ -236,83 +223,46 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
     return permisos.menus.filter((menu) => menu.asignado || assignedById.has(menu.idMenu))
   }, [menuIds, permisos])
 
-  const menuNamesAsignados = useMemo(() => {
-    const names = new Set<string>()
-    for (const menu of menusAsignados) {
-      if (!menu?.nombre) continue
-      names.add(normalizeMenuName(menu.nombre))
-    }
-    return names
-  }, [menusAsignados])
-
   const pageNamesAsignadas = useMemo(() => {
-    const rawPages: string[] = []
+    const pages = new Set<string>()
     for (const menu of menusAsignados) {
       if (menu?.paginaAsociada?.trim()) {
-        rawPages.push(menu.paginaAsociada.trim())
+        pages.add(normalizePageName(menu.paginaAsociada))
       }
       if (!menu?.paginasAsociadas?.length) continue
       for (const pageName of menu.paginasAsociadas) {
         const value = pageName.trim()
         if (!value) continue
-        rawPages.push(value)
+        pages.add(normalizePageName(value))
       }
-    }
-    const pages = new Set<string>()
-    const expandedPages = expandPrincipalPageNames(rawPages)
-    for (const pageName of expandedPages) {
-      const normalized = normalizePageName(pageName)
-      if (!normalized) continue
-      pages.add(normalized)
     }
     return pages
   }, [menusAsignados])
 
   const canAccessNavigationItem = useCallback(
     (item: NavigationItem): boolean => {
-      const activeRoleId = toFiniteNumber(permisos?.idRol ?? usuario?.idRol ?? getSessionStorage()?.idRol)
-      if (item.to === PRIVILEGIOS_ROUTE) {
-        return activeRoleId !== null && activeRoleId === PRIVILEGIOS_ALLOWED_ROLE_ID
-      }
-
       if (!permisos) return false
-      if (item.adminOnly && !administrador) return false
       const hasPageRules = Boolean(item.requiredPageNames?.length || item.requiredAnyPageNames?.length)
-      const shouldEvaluatePageRules = hasPageRules && pageNamesAsignadas.size > 0
       if (
-        shouldEvaluatePageRules &&
+        hasPageRules &&
         item.requiredPageNames?.length &&
         !item.requiredPageNames.every((pageName) => pageNamesAsignadas.has(normalizePageName(pageName)))
       ) {
         return false
       }
       if (
-        shouldEvaluatePageRules &&
+        hasPageRules &&
         item.requiredAnyPageNames?.length &&
         !item.requiredAnyPageNames.some((pageName) => pageNamesAsignadas.has(normalizePageName(pageName)))
       ) {
         return false
       }
-      if (shouldEvaluatePageRules) {
+      if (hasPageRules) {
         return true
-      }
-      if (item.requiredMenuIds?.length && !item.requiredMenuIds.every((idMenu) => menuIds.includes(idMenu))) return false
-      if (item.requiredAnyMenuIds?.length && !item.requiredAnyMenuIds.some((idMenu) => menuIds.includes(idMenu))) return false
-      if (
-        item.requiredMenuNames?.length &&
-        !item.requiredMenuNames.every((menuName) => menuNamesAsignados.has(normalizeMenuName(menuName)))
-      ) {
-        return false
-      }
-      if (
-        item.requiredAnyMenuNames?.length &&
-        !item.requiredAnyMenuNames.some((menuName) => menuNamesAsignados.has(normalizeMenuName(menuName)))
-      ) {
-        return false
       }
       return true
     },
-    [administrador, menuIds, menuNamesAsignados, pageNamesAsignadas, permisos, usuario]
+    [pageNamesAsignadas, permisos]
   )
 
   const visibleNavigationItems = useMemo(

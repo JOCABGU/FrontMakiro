@@ -15,6 +15,7 @@ interface TableProps<T> {
   variant?: 'default' | 'row-block'
   desktopMinWidthClass?: string
   mobileShowHeaders?: boolean
+  mobileRowBlockMode?: 'table' | 'cards'
   desktopScrollMode?: 'auto' | 'always'
   desktopHeightClass?: string
   stickyHeader?: boolean
@@ -28,6 +29,7 @@ const Table = <T,>({
   variant = 'default',
   desktopMinWidthClass = 'min-w-full',
   mobileShowHeaders = true,
+  mobileRowBlockMode = 'table',
   desktopScrollMode = 'auto',
   desktopHeightClass = '',
   stickyHeader = false,
@@ -46,39 +48,95 @@ const Table = <T,>({
       <div className="md:hidden">
         {data.length === 0 ? (
           <div className="px-4 py-6 text-center text-sm text-slate-500">{emptyLabel}</div>
+        ) : isRowBlock && mobileRowBlockMode === 'table' ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] border-collapse text-xs">
+              <thead className="bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
+                <tr>
+                  {columns.map((column) => (
+                    <th key={column.key} className={`border-b border-slate-200 px-3 py-2 text-left ${column.className ?? ''}`}>
+                      {column.header}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {data.map((row, index) => (
+                  <tr key={index} className={rowClassName}>
+                    {columns.map((column) => (
+                      <td key={column.key} className={`border-b border-slate-200 px-3 py-2 align-top text-slate-700 ${column.className ?? ''}`}>
+                        {renderValue(column, row)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <div className={isRowBlock ? 'space-y-2 p-2' : 'divide-y divide-slate-100'}>
             {data.map((row, index) => (
               <div
                 key={index}
-                className={`space-y-2 overflow-hidden p-3 ${isRowBlock ? 'rounded-2xl border border-brand-100/80 bg-white shadow-sm' : ''} ${rowClassName}`}
+                className={`p-2.5 ${isRowBlock ? 'rounded-2xl border border-brand-100/80 bg-white shadow-sm' : ''} ${rowClassName}`}
               >
-                {columns
-                  .filter((column) => !isActionColumn(column))
-                  .map((column) =>
-                    mobileShowHeaders ? (
-                      <div key={column.key} className="grid grid-cols-1 items-start gap-1.5 sm:grid-cols-[minmax(96px,40%)_minmax(0,1fr)] sm:gap-3">
-                        <span className="text-xs font-semibold text-slate-500">{column.header}</span>
-                        <div className="min-w-0 break-all text-left text-sm font-medium text-slate-700 [overflow-wrap:anywhere] sm:text-right">
-                          {renderValue(column, row)}
-                        </div>
-                      </div>
-                    ) : (
-                      <div key={column.key} className="min-w-0 break-all text-sm text-slate-700 [overflow-wrap:anywhere]">
-                        {renderValue(column, row)}
-                      </div>
-                    )
-                  )}
+                {isRowBlock ? (
+                  <>
+                    {(() => {
+                      const visibleColumns = columns.filter((column) => !isActionColumn(column))
 
-                {columns.some((column) => isActionColumn(column)) ? (
-                  <div className="space-y-2 border-t border-slate-200/80 pt-2 [&>div>button]:w-full [&>div>button]:justify-center">
+                      return (
+                        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-slate-50">
+                          {visibleColumns.map((column) => (
+                            <div key={column.key} className="px-2.5 py-1.5">
+                              {mobileShowHeaders ? (
+                                <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500">{column.header}</span>
+                              ) : null}
+                              <div className="mt-0.5 break-words text-left text-sm text-slate-700">{renderValue(column, row)}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )
+                    })()}
+
+                    {columns.some((column) => isActionColumn(column)) ? (
+                      <div className="mt-2 [&>div>button]:w-full [&>div>button]:justify-center">
+                        {columns
+                          .filter((column) => isActionColumn(column))
+                          .map((column) => (
+                            <div key={column.key}>{renderValue(column, row)}</div>
+                          ))}
+                      </div>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
                     {columns
-                      .filter((column) => isActionColumn(column))
-                      .map((column) => (
-                        <div key={column.key}>{renderValue(column, row)}</div>
-                      ))}
-                  </div>
-                ) : null}
+                      .filter((column) => !isActionColumn(column))
+                      .map((column) =>
+                        mobileShowHeaders ? (
+                          <div key={column.key} className="grid grid-cols-[minmax(96px,40%)_1fr] items-start gap-3">
+                            <span className="text-xs font-semibold text-slate-500">{column.header}</span>
+                            <div className="break-words text-right text-sm font-medium text-slate-700">{renderValue(column, row)}</div>
+                          </div>
+                        ) : (
+                          <div key={column.key} className="break-words text-sm text-slate-700">
+                            {renderValue(column, row)}
+                          </div>
+                        )
+                      )}
+
+                    {columns.some((column) => isActionColumn(column)) ? (
+                      <div className="space-y-2 border-t border-slate-200/80 pt-2 [&>div>button]:w-full [&>div>button]:justify-center">
+                        {columns
+                          .filter((column) => isActionColumn(column))
+                          .map((column) => (
+                            <div key={column.key}>{renderValue(column, row)}</div>
+                          ))}
+                      </div>
+                    ) : null}
+                  </>
+                )}
               </div>
             ))}
           </div>

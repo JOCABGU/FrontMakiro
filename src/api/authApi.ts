@@ -45,6 +45,7 @@ const normalizeAuthMeResponse = (payload: unknown): AuthMeResponse => {
     rol,
     idRol,
     idSucursal: readNumberField(base, ['idSucursal', 'IdSucursal', 'Id_Sucursal', 'id_sucursal']),
+    hostName: readStringField(base, ['hostName', 'HostName', 'hostname', 'Hostname', 'pcName', 'PcName']),
   }
 }
 

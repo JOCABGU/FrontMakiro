@@ -36,25 +36,22 @@ export const fetchTipoMaterial = async (tipoServicioId: number): Promise<Catalog
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
-export const fetchProductos = async (rutaId?: number): Promise<CatalogItem[]> => {
-  // El backend actual expone un unico catalogo de productos por /catalogos/productos.
-  // rutaId se mantiene por compatibilidad de firma en el front.
-  void rutaId
-  const { data } = await api.get('/catalogos/productos')
+export const fetchProductos = async (rutaId: number): Promise<CatalogItem[]> => {
+  const { data } = await api.get('/catalogos/productos/TraerTodosLosProductos_x_IdRutaWeb', {
+    params: { rutaId },
+  })
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
 export const fetchProductosSinFungible = async (rutaId: number): Promise<CatalogItem[]> => {
-  // El endpoint legacy /TraerTodosLosProductos_SinFungibleWeb no existe en este backend.
-  // Se usa el catalogo general y el filtrado funcional ocurre en las validaciones de OT.
-  void rutaId
-  const { data } = await api.get('/catalogos/productos')
+  const { data } = await api.get('/catalogos/productos/TraerTodosLosProductos_SinFungibleWeb', {
+    params: { rutaId },
+  })
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
 export const fetchProductosCargoUsuario = async (): Promise<CatalogItem[]> => {
-  // El endpoint legacy /TraerTodosLosProductosPCargoUsuarioWeb no existe en este backend.
-  const { data } = await api.get('/catalogos/productos')
+  const { data } = await api.get('/catalogos/productos/TraerTodosLosProductosPCargoUsuarioWeb')
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
@@ -63,10 +60,10 @@ export const buscarSerialCargoUsuario = async (params: {
   chipId?: string
   tipoCodigo: number
 }): Promise<CatalogItem[]> => {
-  // El backend actual no expone /catalogos/cargo-usuario/buscar.
-  // Validamos duplicidad al guardar via /ot/cargo-usuario.
-  void params
-  return []
+  const { data } = await api.get('/catalogos/cargo-usuario/buscar', {
+    params,
+  })
+  return normalizeArrayResponse<CatalogItem>(data)
 }
 
 export const fetchProductosMascara = async (): Promise<CatalogItem[]> => {
@@ -132,6 +129,18 @@ const parseSeriesAllowedFlag = (value: unknown): boolean | null => {
   return null
 }
 
+const parseExistsFlag = (value: unknown): boolean | null => {
+  if (value === undefined || value === null || value === '') return null
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.replace(/\s+/g, '').toLowerCase()
+    if (['existe', 'si', 's', 'true', '1'].includes(normalized)) return true
+    if (['noexiste', 'no', 'n', 'false', '0'].includes(normalized)) return false
+  }
+  return null
+}
+
 const buildSerieSaldoResult = (row: CatalogItem): SerieSaldoValidationResult => {
   const sePuede = parseSeriesAllowedFlag(
     pickValue(row, ['SePuede', 'Se Puede', 'SePuedeRegistrar', 'SePuedeRegistrado', 'Se Puede Registrar'])
@@ -144,6 +153,123 @@ const buildSerieSaldoResult = (row: CatalogItem): SerieSaldoValidationResult => 
     observacion: toStringValue(observacion) ?? undefined,
     chipId: toStringValue(chipId) ?? undefined,
     idProducto: toNumberValue(productoId) ?? undefined,
+  }
+}
+
+type CargoUsuarioProcValidationResult = {
+  existe: boolean
+  sePuede: boolean
+  observacion?: string
+  chipId?: string
+  serial?: string
+  idProducto?: number
+  endpointMissing?: boolean
+}
+
+let cargoUsuarioProcEndpointMissing = false
+let cargoUsuarioProcCunr2EndpointMissing = false
+
+const buildCargoUsuarioProcResult = (rows: CatalogItem[]): CargoUsuarioProcValidationResult => {
+  if (rows.length === 0) {
+    return {
+      existe: false,
+      sePuede: true,
+    }
+  }
+
+  const row = rows[0]
+  const existe = parseExistsFlag(pickValue(row, ['Existe', 'existe'])) ?? true
+  const sePuede = parseSeriesAllowedFlag(
+    pickValue(row, ['SePuede', 'sePuede', 'Se Puede', 'SePuedeRegistrar', 'resultado', 'Resultado'])
+  )
+  const observacion = toStringValue(pickValue(row, ['Observacion', 'observacion', 'Mensaje', 'mensaje', 'Detalle', 'detalle']))
+  const chipId = toStringValue(pickValue(row, ['ChipID', 'ChipId', 'chipId', 'chipid']))
+  const serial = toStringValue(pickValue(row, ['Serial', 'serial']))
+  const idProducto = toNumberValue(pickValue(row, ['Id_Producto', 'id_producto', 'IdProducto', 'idProducto', 'ProductoId']))
+
+  return {
+    existe,
+    sePuede: existe ? sePuede ?? true : true,
+    observacion: observacion ?? undefined,
+    chipId: chipId ?? undefined,
+    serial: serial ?? undefined,
+    idProducto: idProducto ?? undefined,
+  }
+}
+
+export const validarCargoUsuarioConProc = async (codigo: string): Promise<CargoUsuarioProcValidationResult> => {
+  const codigoTrim = codigo.trim()
+  if (!codigoTrim) {
+    return {
+      existe: false,
+      sePuede: true,
+    }
+  }
+
+  if (cargoUsuarioProcEndpointMissing) {
+    return {
+      existe: false,
+      sePuede: true,
+      endpointMissing: true,
+    }
+  }
+  try {
+    const { data } = await api.get('/catalogos/spx_TraerDatoSerieChipIdCU', {
+      params: { serie: codigoTrim },
+    })
+    const rows = normalizeArrayResponse<CatalogItem>(data)
+    return buildCargoUsuarioProcResult(rows)
+  } catch (error: unknown) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    if (status === 404) {
+      cargoUsuarioProcEndpointMissing = true
+      return {
+        existe: false,
+        sePuede: true,
+        endpointMissing: true,
+      }
+    }
+    throw error
+  }
+}
+
+export const validarCargoUsuarioConProcCunr2 = async (
+  serie: string,
+  chipId: string
+): Promise<CargoUsuarioProcValidationResult> => {
+  const serieTrim = serie.trim()
+  const chipTrim = chipId.trim()
+  if (!serieTrim || !chipTrim) {
+    return {
+      existe: false,
+      sePuede: true,
+    }
+  }
+
+  if (cargoUsuarioProcCunr2EndpointMissing) {
+    return {
+      existe: false,
+      sePuede: true,
+      endpointMissing: true,
+    }
+  }
+  try {
+    const { data } = await api.get('/catalogos/spx_TraerDatoSerieChipIdCU_CUNR2', {
+      params: { serie: serieTrim, chipId: chipTrim },
+    })
+    const rows = normalizeArrayResponse<CatalogItem>(data)
+    return buildCargoUsuarioProcResult(rows)
+  } catch (error: unknown) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    if (status === 404) {
+      cargoUsuarioProcCunr2EndpointMissing = true
+      return {
+        existe: false,
+        sePuede: true,
+        endpointMissing: true,
+      }
+    }
+    throw error
   }
 }
 

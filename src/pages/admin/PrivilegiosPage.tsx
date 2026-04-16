@@ -4,7 +4,6 @@ import Button from '../../components/common/Button'
 import Modal from '../../components/common/Modal'
 import PrivilegiosTree from '../../components/privilegios/PrivilegiosTree'
 import { useAuth } from '../../context/AuthContext'
-import { inferPrincipalKeys, principalGroupKeys } from '../../pages/principal'
 import {
   fetchPrivilegiosRolDetalle,
   fetchRolesPrivilegios,
@@ -32,10 +31,6 @@ const getAssignedMenuIds = (detalle: PrivilegiosRolDetalle | null): number[] => 
   return detalle.menus.filter((menu) => menu.asignado).map((menu) => menu.idMenu)
 }
 
-const getAvailablePageNames = (): string[] => {
-  return [...principalGroupKeys].sort((a, b) => a.localeCompare(b))
-}
-
 const getMenuPageNames = (menu: MenuPermiso | null): string[] => {
   if (!menu) return []
   const assigned = new Set<string>()
@@ -47,7 +42,22 @@ const getMenuPageNames = (menu: MenuPermiso | null): string[] => {
     if (!value) continue
     assigned.add(value)
   }
-  return inferPrincipalKeys(Array.from(assigned)).sort((a, b) => a.localeCompare(b))
+  return Array.from(assigned).sort((a, b) => a.localeCompare(b))
+}
+
+const collectAvailablePageNames = (menus: MenuPermiso[]): string[] => {
+  const names = new Set<string>()
+  for (const menu of menus) {
+    if (menu.paginaAsociada?.trim()) {
+      names.add(menu.paginaAsociada.trim())
+    }
+    for (const page of menu.paginasAsociadas ?? []) {
+      const value = page.trim()
+      if (!value) continue
+      names.add(value)
+    }
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b))
 }
 
 const PrivilegiosPage = () => {
@@ -185,7 +195,7 @@ const PrivilegiosPage = () => {
   )
 
   const detalle = detalleQuery.data ?? null
-  const availablePageNames = useMemo(() => getAvailablePageNames(), [])
+  const availablePageNames = useMemo(() => collectAvailablePageNames(detalle?.menus ?? []), [detalle])
   const fullMenuById = useMemo(() => {
     const map = new Map<number, MenuPermiso>()
     if (!detalle) return map
@@ -530,7 +540,6 @@ const PrivilegiosPage = () => {
           if (menuPaginasMutation.isPending) return
           setIsMenuPaginasModalOpen(false)
         }}
-        maxWidthClassName="max-w-5xl"
         actions={
           <>
             <Button
@@ -619,7 +628,6 @@ const PrivilegiosPage = () => {
           if (sidebarConfigMutation.isPending) return
           setIsSidebarConfigModalOpen(false)
         }}
-        maxWidthClassName="max-w-4xl"
         actions={
           <>
             <Button
