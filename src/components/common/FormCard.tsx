@@ -5,19 +5,23 @@ interface FormCardProps {
   description?: string
   children: ReactNode
   actions?: ReactNode
+  hideHeader?: boolean
 }
 
-const FormCard = ({ title, description, children, actions }: FormCardProps) => {
+const FormCard = ({ title, description, children, actions, hideHeader = false }: FormCardProps) => {
+  const showHeader = !hideHeader
   return (
     <div className="glass-panel p-6 sm:p-7">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h3 className="text-xl font-semibold text-slate-900">{title}</h3>
-          {description ? <p className="text-sm text-slate-600">{description}</p> : null}
+      {showHeader ? (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xl font-semibold text-slate-900">{title}</h3>
+            {description ? <p className="text-sm text-slate-600">{description}</p> : null}
+          </div>
+          {actions ? <div className="flex w-full items-center gap-3 sm:w-auto">{actions}</div> : null}
         </div>
-        {actions ? <div className="flex w-full items-center gap-3 sm:w-auto">{actions}</div> : null}
-      </div>
-      <div className="mt-6">{children}</div>
+      ) : null}
+      <div className={showHeader ? 'mt-6' : ''}>{children}</div>
     </div>
   )
 }

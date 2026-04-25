@@ -21,6 +21,16 @@ export const fetchTiposServicio = async (): Promise<CatalogItem[]> => {
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
+export const fetchNomencladores = async (): Promise<CatalogItem[]> => {
+  const { data } = await api.get('/catalogos/nomencladores')
+  return normalizeArrayResponse<CatalogItem>(data)
+}
+
+export const fetchKitsDecodificadores = async (): Promise<CatalogItem[]> => {
+  const { data } = await api.get('/catalogos/kits-decodificadores')
+  return normalizeArrayResponse<CatalogItem>(data)
+}
+
 export const fetchEstados = async (): Promise<CatalogItem[]> => {
   const { data } = await api.get('/catalogos/estados')
   return normalizeArrayResponse<CatalogItem>(data)
@@ -117,6 +127,45 @@ const isRecord = (value: unknown): value is ApiRecord => {
   return typeof value === 'object' && value !== null
 }
 
+const collectErrorFragments = (error: unknown): string[] => {
+  const fragments: string[] = []
+  const pushValue = (value: unknown): void => {
+    if (typeof value === 'string' && value.trim()) {
+      fragments.push(value.trim().toLowerCase())
+    }
+  }
+
+  if (isRecord(error)) {
+    pushValue(error.message)
+    const response = isRecord(error.response) ? error.response : null
+    const payload = response && isRecord(response.data) ? response.data : null
+    if (payload) {
+      pushValue(payload.message)
+      pushValue(payload.error)
+      pushValue(payload.rootCause)
+      const details = isRecord(payload.details) ? payload.details : null
+      if (details) {
+        pushValue(details.rootCause)
+        pushValue(details.exception)
+      }
+    }
+  }
+
+  return fragments
+}
+
+const isNoResultSetError = (error: unknown): boolean => {
+  const fragments = collectErrorFragments(error)
+  if (fragments.length === 0) return false
+  const joined = fragments.join(' | ')
+  return (
+    joined.includes('did not return a result set') ||
+    joined.includes('did not return any results') ||
+    joined.includes('no devolvio un conjunto de resultados') ||
+    joined.includes('no resultset')
+  )
+}
+
 const parseSeriesAllowedFlag = (value: unknown): boolean | null => {
   if (value === undefined || value === null || value === '') return null
   if (typeof value === 'boolean') return value
@@ -124,7 +173,7 @@ const parseSeriesAllowedFlag = (value: unknown): boolean | null => {
   if (typeof value === 'string') {
     const normalized = value.replace(/\s+/g, '').toLowerCase()
     if (['sepuede', 's', 'si', 'true', '1', 'sepuederegistrar'].includes(normalized)) return true
-    if (['nosepuede', 'false', '0', 'no'].includes(normalized)) return false
+    if (['nosepuede', 'nosepuederegistrar', 'false', '0', 'no'].includes(normalized)) return false
   }
   return null
 }
@@ -168,6 +217,71 @@ type CargoUsuarioProcValidationResult = {
 
 let cargoUsuarioProcEndpointMissing = false
 let cargoUsuarioProcCunr2EndpointMissing = false
+let verificarEstadoSerieEndpointMissing = false
+
+type VerificarEstadoSerieParams = {
+  serie: string
+  chipId?: string
+  idProducto: number
+  idTipoMaterial: number
+  idRuta?: number | null
+}
+
+type VerificarEstadoSerieResult = {
+  sePuede: boolean
+  observacion?: string
+  endpointMissing?: boolean
+}
+
+export const validarEstadoSerieRegistroOt = async (
+  params: VerificarEstadoSerieParams
+): Promise<VerificarEstadoSerieResult> => {
+  const serieTrim = params.serie.trim()
+  if (!serieTrim) return { sePuede: true }
+
+  if (verificarEstadoSerieEndpointMissing) {
+    return { sePuede: true, endpointMissing: true }
+  }
+
+  try {
+    const { data } = await api.get('/catalogos/spx_VerificarEstadoSerie', {
+      params: {
+        serie: serieTrim,
+        chipId: params.chipId?.trim() ?? '',
+        idProducto: params.idProducto,
+        tipoValidacion: 3,
+        tipoMaterial: params.idTipoMaterial,
+        idRuta: params.idRuta ?? undefined,
+      },
+    })
+    const rows = normalizeArrayResponse<CatalogItem>(data)
+    if (rows.length === 0) return { sePuede: true }
+
+    const row = rows[0]
+    const values = Object.values(row)
+    const sePuede =
+      parseSeriesAllowedFlag(
+        pickValue(row, ['SePuede', 'sePuede', 'Resultado', 'resultado', 'Estado', 'estado'])
+      ) ??
+      parseSeriesAllowedFlag(values[0]) ??
+      true
+    const observacion =
+      toStringValue(pickValue(row, ['Observacion', 'observacion', 'Mensaje', 'mensaje', 'Detalle', 'detalle'])) ??
+      toStringValue(values[1]) ??
+      undefined
+    return {
+      sePuede,
+      observacion,
+    }
+  } catch (error: unknown) {
+    const status = (error as { response?: { status?: number } })?.response?.status
+    if (status === 404) {
+      verificarEstadoSerieEndpointMissing = true
+      return { sePuede: true, endpointMissing: true }
+    }
+    throw error
+  }
+}
 
 const buildCargoUsuarioProcResult = (rows: CatalogItem[]): CargoUsuarioProcValidationResult => {
   if (rows.length === 0) {
@@ -274,22 +388,32 @@ export const validarCargoUsuarioConProcCunr2 = async (
 }
 
 export const validarSerieSaldo = async (params: SerieSaldoValidationParams): Promise<SerieSaldoValidationResult> => {
-  const { data } = await api.get('/catalogos/spx_TraerDatoSerieChipIdCU_OT', {
-    params: {
-      serie: params.serie,
-      idProducto: params.idProducto,
-      tipoMaterial: params.idTipoMaterial,
-      idRuta: params.idRuta ?? undefined,
-    },
-  })
-  const rows = normalizeArrayResponse<CatalogItem>(data)
-  if (rows.length === 0) {
-    return {
-      sePuede: false,
-      observacion: 'No se pudo validar la serie.',
+  try {
+    const { data } = await api.get('/catalogos/spx_TraerDatoSerieChipIdCU_OT', {
+      params: {
+        serie: params.serie,
+        idProducto: params.idProducto,
+        tipoMaterial: params.idTipoMaterial,
+        idRuta: params.idRuta ?? undefined,
+      },
+    })
+    const rows = normalizeArrayResponse<CatalogItem>(data)
+    if (rows.length === 0) {
+      return {
+        sePuede: false,
+        observacion: 'La serie no existe en saldo.',
+      }
     }
+    return buildSerieSaldoResult(rows[0])
+  } catch (error: unknown) {
+    if (isNoResultSetError(error)) {
+      return {
+        sePuede: false,
+        observacion: 'La serie no existe en saldo.',
+      }
+    }
+    throw error
   }
-  return buildSerieSaldoResult(rows[0])
 }
 
 type SerieChipUniqueValidationParams = {

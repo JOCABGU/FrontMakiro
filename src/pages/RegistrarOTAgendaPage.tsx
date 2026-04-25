@@ -17,9 +17,12 @@ import {
 import { useSessionStore } from '../store/sessionStore'
 
 type AgendaNavState = {
+  manual?: boolean
+  origen?: string
   ot?: string
   tor?: string
   clienteNro?: string
+  estado?: string
   grupo?: string
   tecnicoNombre?: string
   idVendedor?: string
@@ -37,10 +40,31 @@ const GEO_MAX_CAPTURE_MS = 20000
 const GEO_MIN_SAMPLES = 3
 const GEO_MAX_SAMPLES = 8
 const GEO_BYPASS_HOSTS = ['desktop-b4oj8tg']
+const OT_DASHBOARD_FORCE_REFRESH_KEY = 'ot-dashboard-force-refresh'
+const TIPO_SERVICIO_ID_KEYS = [
+  'id_tiposervicio',
+  'Id_TipoServicio',
+  'idTipoServicio',
+  'IdTipoServicio',
+  'id_tipo_servicio',
+  'Id_Tipo_Servicio',
+] as const
 
 const normalizeHostName = (value: string): string => value.trim().toLowerCase()
 
 const normalizeKey = (value: string): string => value.replace(/[_\-\s]/g, '').toLowerCase()
+const normalizeText = (value: string): string =>
+  value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+
+const isEstadoCerradoFinalizadoOk = (label: string): boolean => {
+  const normalized = normalizeText(label)
+  return normalized.includes('cerrado') && normalized.includes('finalizado') && normalized.includes('ok')
+}
 
 const readValue = (row: UnknownRecord, keys: string[]): unknown => {
   const normalizedKeys = keys.map(normalizeKey)
@@ -84,6 +108,21 @@ const readNumber = (row: UnknownRecord, keys: string[]): number | null => {
   return null
 }
 
+const readNumberByToken = (row: UnknownRecord, includeTokens: string[]): number | null => {
+  const normalizedTokens = includeTokens.map(normalizeKey)
+  for (const [key, raw] of Object.entries(row)) {
+    if (raw === undefined || raw === null || raw === '') continue
+    const normalizedKey = normalizeKey(key)
+    if (!normalizedTokens.every((token) => normalizedKey.includes(token))) continue
+    if (typeof raw === 'number' && Number.isFinite(raw)) return raw
+    if (typeof raw === 'string') {
+      const parsed = Number(raw.trim())
+      if (Number.isFinite(parsed)) return parsed
+    }
+  }
+  return null
+}
+
 const parseNumber = (value: string): number | null => {
   if (!value.trim()) return null
   const parsed = Number(value)
@@ -93,6 +132,14 @@ const parseNumber = (value: string): number | null => {
 const findNumberInRows = (rows: UnknownRecord[], keys: string[]): number | null => {
   for (const row of rows) {
     const value = readNumber(row, keys)
+    if (value !== null) return value
+  }
+  return null
+}
+
+const findNumberInRowsByToken = (rows: UnknownRecord[], includeTokens: string[]): number | null => {
+  for (const row of rows) {
+    const value = readNumberByToken(row, includeTokens)
     if (value !== null) return value
   }
   return null
@@ -157,12 +204,17 @@ const RegistrarOTAgendaPage = () => {
   const location = useLocation()
   const session = useSessionStore((state) => state.session)
   const navState = (location.state as AgendaNavState | null) ?? null
+  const isManualMode = navState?.manual === true
+  const origenRegistro = (navState?.origen ?? (isManualMode ? 'Manual' : 'OT_WEB')).trim() || (isManualMode ? 'Manual' : 'OT_WEB')
 
   const [idEstado, setIdEstado] = useState('')
   const [observacion, setObservacion] = useState('')
   const [latitud, setLatitud] = useState<number | null>(null)
   const [longitud, setLongitud] = useState<number | null>(null)
   const [geoAccuracy, setGeoAccuracy] = useState<number | null>(null)
+  const [idTipoServicioManual, setIdTipoServicioManual] = useState(() => (navState?.idTipoServicio ?? '').trim())
+  const [otManualInput, setOtManualInput] = useState(() => (navState?.ot ?? '').trim())
+  const [clienteManualInput, setClienteManualInput] = useState(() => (navState?.clienteNro ?? '').trim())
   const [geoLoading, setGeoLoading] = useState(false)
   const [geoError, setGeoError] = useState<string | null>(null)
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -174,6 +226,8 @@ const RegistrarOTAgendaPage = () => {
   const [isPrevalidating, setIsPrevalidating] = useState(false)
   const [hasAttemptedSubmit, setHasAttemptedSubmit] = useState(false)
   const [registroGuardado, setRegistroGuardado] = useState(false)
+  const [successModalOpen, setSuccessModalOpen] = useState(false)
+  const [successModalMessage, setSuccessModalMessage] = useState('')
   const queryClient = useQueryClient()
 
   const otRaw = (navState?.ot ?? '').trim()
@@ -235,7 +289,7 @@ const RegistrarOTAgendaPage = () => {
 
   const cabeceraQuery = useQuery({
     queryKey: ['cabecera-venta-registro-otwb', spParams.clienteNro, spParams.ot, spParams.tor, spParams.grupo, spParams.tecnicoNombre],
-    enabled: Boolean(clienteNro && ot && tor && tecnicoNombre),
+    enabled: !isManualMode && Boolean(clienteNro && ot && tor && tecnicoNombre),
     queryFn: () => fetchCabeceraVentaParaRegistroOtWb(spParams),
   })
 
@@ -248,7 +302,7 @@ const RegistrarOTAgendaPage = () => {
   const otDetailQuery = useQuery({
     queryKey: ['ot-por-numero', otRaw],
     queryFn: () => fetchOtByNumero(otRaw),
-    enabled: Boolean(otRaw),
+    enabled: !isManualMode && Boolean(otRaw) && cabeceraQuery.isFetched && (cabeceraQuery.isError || cabeceraRows.length === 0),
     retry: false,
   })
   const otDetailRow = otDetailQuery.data ?? null
@@ -261,26 +315,71 @@ const RegistrarOTAgendaPage = () => {
     return rows
   }, [cabeceraRows, otDetailRow, rowData])
 
+  const manualRouteResolution = useMemo(() => {
+    if (!isManualMode) {
+      return { id: null as number | null, total: 0, hasMultiple: false }
+    }
+    const rows = (rutasQuery.data ?? []) as UnknownRecord[]
+    const ids = new Set<number>()
+    for (const row of rows) {
+      const id =
+        readNumber(row, ['idRuta', 'id_ruta', 'Id_Ruta', 'IdRuta', 'idGrupo', 'id_grupo', 'Id_Grupo', 'IdGrupo', 'id', 'Id']) ??
+        readNumberByToken(row, ['id', 'ruta']) ??
+        readNumberByToken(row, ['id', 'grupo'])
+      if (id !== null && id > 0) {
+        ids.add(id)
+      }
+    }
+    const resolvedIds = Array.from(ids)
+    if (resolvedIds.length === 1) {
+      return { id: resolvedIds[0], total: 1, hasMultiple: false }
+    }
+    return { id: null as number | null, total: resolvedIds.length, hasMultiple: resolvedIds.length > 1 }
+  }, [isManualMode, rutasQuery.data])
+
+  const fallbackIdRutaDesdeCatalogo = useMemo(() => {
+    if (isManualMode) return manualRouteResolution.id
+    const rutasRows = (rutasQuery.data ?? []) as UnknownRecord[]
+    const direct = findNumberInRows(rutasRows, ['idRuta', 'id_ruta', 'Id_Ruta', 'IdRuta', 'idGrupo', 'id_grupo', 'Id_Grupo', 'IdGrupo'])
+    if (direct !== null) return direct
+    return findNumberInRowsByToken(rutasRows, ['id', 'ruta'])
+  }, [isManualMode, manualRouteResolution.id, rutasQuery.data])
+
   const hiddenIdVendedor = useMemo(() => {
     const cabeceraValue = findNumberInRows(resolvedRows, ['id_vendedor', 'Id_Vendedor', 'idVendedor', 'IdVendedor', 'idusuario', 'IdUsuario'])
-    return cabeceraValue ?? navIdVendedor ?? null
-  }, [navIdVendedor, resolvedRows])
+    return cabeceraValue ?? navIdVendedor ?? session?.idUsuario ?? null
+  }, [navIdVendedor, resolvedRows, session?.idUsuario])
   const hiddenIdRuta = useMemo(() => {
+    if (isManualMode) return manualRouteResolution.id
     const cabeceraValue = findNumberInRows(resolvedRows, ['id_ruta', 'Id_Ruta', 'idRuta', 'IdRuta'])
-    return cabeceraValue ?? navIdRuta ?? null
-  }, [navIdRuta, resolvedRows])
+    return cabeceraValue ?? navIdRuta ?? fallbackIdRutaDesdeCatalogo ?? null
+  }, [fallbackIdRutaDesdeCatalogo, isManualMode, manualRouteResolution.id, navIdRuta, resolvedRows])
   const hiddenIdGrupo = useMemo(() => {
+    if (isManualMode) return manualRouteResolution.id
     const cabeceraValue = findNumberInRows(resolvedRows, ['id_grupo', 'Id_Grupo', 'idGrupo', 'IdGrupo'])
-    return cabeceraValue ?? hiddenIdRuta ?? navIdRuta ?? null
-  }, [navIdRuta, resolvedRows, hiddenIdRuta])
-  const hiddenIdTipoServicio = useMemo(() => {
-    const cabeceraValue = findNumberInRows(resolvedRows, ['id_tiposervicio', 'Id_TipoServicio', 'idTipoServicio', 'IdTipoServicio'])
-    return cabeceraValue ?? navIdTipoServicio ?? null
+    return cabeceraValue ?? hiddenIdRuta ?? navIdRuta ?? fallbackIdRutaDesdeCatalogo ?? null
+  }, [fallbackIdRutaDesdeCatalogo, hiddenIdRuta, isManualMode, manualRouteResolution.id, navIdRuta, resolvedRows])
+  const hiddenIdTipoServicioFromData = useMemo(() => {
+    const cabeceraValue = findNumberInRows(resolvedRows, [...TIPO_SERVICIO_ID_KEYS])
+    if (cabeceraValue !== null) return cabeceraValue
+    const tokenValue = findNumberInRowsByToken(resolvedRows, ['id', 'tipo', 'servicio'])
+    return tokenValue ?? navIdTipoServicio ?? null
   }, [navIdTipoServicio, resolvedRows])
   const hiddenIdSucursal = useMemo(() => {
     const cabeceraValue = findNumberInRows(resolvedRows, ['id_sucursal', 'Id_Sucursal', 'idSucursal', 'IdSucursal'])
-    return cabeceraValue ?? navIdSucursal ?? null
-  }, [navIdSucursal, resolvedRows])
+    return cabeceraValue ?? navIdSucursal ?? session?.idSucursal ?? null
+  }, [navIdSucursal, resolvedRows, session?.idSucursal])
+  const manualRouteIssue = useMemo(() => {
+    if (!isManualMode) return null
+    if (rutasQuery.isLoading) return null
+    if (manualRouteResolution.hasMultiple) {
+      return 'No se puede registrar en modo Manual: el usuario tiene mas de un grupo/ruta asociado.'
+    }
+    if (manualRouteResolution.total === 0) {
+      return 'No se encontro grupo/ruta para el usuario en tbl_ruta.'
+    }
+    return null
+  }, [isManualMode, manualRouteResolution.hasMultiple, manualRouteResolution.total, rutasQuery.isLoading])
 
   const tecnicoVisible = useMemo(() => {
     if (!cabecera) return tecnicoNombre
@@ -300,12 +399,14 @@ const RegistrarOTAgendaPage = () => {
     const value = readNumber(cabecera, ['ot', 'OT', 'ordenTrabajo', 'OrdenTrabajo'])
     return value !== null ? String(value) : ot ? String(ot) : ''
   }, [cabecera, ot])
+  const otInputValue = isManualMode ? otManualInput : otVisible
 
   const clienteVisible = useMemo(() => {
     if (!cabecera) return clienteNro ? String(clienteNro) : ''
     const value = readNumber(cabecera, ['cliente_nro', 'Cliente_Nro', 'clienteNro', 'ClienteNro'])
     return value !== null ? String(value) : clienteNro ? String(clienteNro) : ''
   }, [cabecera, clienteNro])
+  const clienteInputValue = isManualMode ? clienteManualInput : clienteVisible
 
   const sucursalVisible = useMemo(() => {
     for (const row of cabeceraRows) {
@@ -320,6 +421,84 @@ const RegistrarOTAgendaPage = () => {
     queryFn: fetchTiposServicio,
   })
 
+  const tipoServicioOptions = useMemo(() => {
+    const rows = tiposServicioQuery.data ?? []
+    return rows
+      .map((row) => {
+        const id = readNumber(row, [...TIPO_SERVICIO_ID_KEYS, 'id', 'Id'])
+        if (id === null) return null
+        const prefijo = readString(row, ['prefijo', 'Prefijo', 'tor', 'TOR', 'codigo', 'Codigo', 'abreviatura', 'Abreviatura', 'sigla', 'Sigla']).trim()
+        const descripcion = readString(row, ['tipoServicio', 'TipoServicio', 'nombre', 'Nombre', 'descripcion', 'Descripcion']).trim()
+        const labelBase = descripcion || `Tipo ${id}`
+        const label = prefijo ? `${labelBase} (${prefijo})` : labelBase
+        return { value: String(id), label }
+      })
+      .filter((item): item is { value: string; label: string } => Boolean(item))
+  }, [tiposServicioQuery.data])
+
+  const hiddenIdTipoServicio = useMemo(() => {
+    if (hiddenIdTipoServicioFromData !== null) return hiddenIdTipoServicioFromData
+    const rows = tiposServicioQuery.data ?? []
+    const target = tor.trim().toLowerCase()
+    if (!target) return null
+
+    const matchByPrefijo = rows.find(
+      (row) =>
+        readString(row, ['prefijo', 'Prefijo', 'tor', 'TOR', 'codigo', 'Codigo', 'abreviatura', 'Abreviatura', 'sigla', 'Sigla'])
+          .trim()
+          .toLowerCase() === target
+    )
+    if (matchByPrefijo) {
+      const id = readNumber(matchByPrefijo, [...TIPO_SERVICIO_ID_KEYS, 'id', 'Id'])
+      if (id !== null) return id
+    }
+
+    const matchByTor = rows.find((row) => readString(row, ['tor', 'TOR']).trim().toLowerCase() === target)
+    if (matchByTor) {
+      const id = readNumber(matchByTor, [...TIPO_SERVICIO_ID_KEYS, 'id', 'Id'])
+      if (id !== null) return id
+    }
+
+    const matchByDescriptionToken = rows.find((row) => {
+      const descripcion = readString(row, ['tipoServicio', 'TipoServicio', 'nombre', 'Nombre', 'descripcion', 'Descripcion'])
+        .trim()
+        .toLowerCase()
+      if (!descripcion) return false
+      const tokens = descripcion.split(/[^a-z0-9]+/g).filter(Boolean)
+      return tokens.includes(target)
+    })
+    if (matchByDescriptionToken) {
+      const id = readNumber(matchByDescriptionToken, [...TIPO_SERVICIO_ID_KEYS, 'id', 'Id'])
+      if (id !== null) return id
+    }
+
+    return null
+  }, [hiddenIdTipoServicioFromData, tiposServicioQuery.data, tor])
+
+  const parsedTipoServicioManual = parseNumber(idTipoServicioManual)
+  const effectiveIdTipoServicio = isManualMode ? parsedTipoServicioManual : (hiddenIdTipoServicio ?? parsedTipoServicioManual)
+
+  const estadoOrigen = useMemo(() => {
+    const fromState = (navState?.estado ?? '').trim()
+    if (fromState) return fromState
+    if (!rowData) return ''
+    const fromRow = readString(rowData, [
+      'estado',
+      'Estado',
+      'estadoCierre',
+      'EstadoCierre',
+      'nombre_estado',
+      'estadoNombre',
+      'descripcionEstado',
+      'DescripcionEstado',
+    ]).trim()
+    return fromRow
+  }, [navState?.estado, rowData])
+  const shouldAutoMapEstadoFallidaConVisita = useMemo(() => {
+    const normalized = normalizeText(estadoOrigen)
+    return normalized.includes('fallida') && normalized.includes('visita')
+  }, [estadoOrigen])
+
   const tipoServicioLabel = useMemo(() => {
     const rows = tiposServicioQuery.data ?? []
     const target = tor.trim().toLowerCase()
@@ -327,7 +506,7 @@ const RegistrarOTAgendaPage = () => {
     const match =
       rows.find((row) => readString(row, ['prefijo', 'Prefijo']).trim().toLowerCase() === target) ??
       rows.find((row) => {
-        const id = readNumber(row, ['idTipoServicio', 'IdTipoServicio', 'id_tiposervicio', 'Id_TipoServicio'])
+        const id = readNumber(row, [...TIPO_SERVICIO_ID_KEYS])
         return id !== null && hiddenIdTipoServicio !== null && id === hiddenIdTipoServicio
       }) ??
       null
@@ -350,6 +529,42 @@ const RegistrarOTAgendaPage = () => {
       ),
     [estadosQuery.data]
   )
+  const blockedEstadoIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const option of estadoOptions) {
+      if (isEstadoCerradoFinalizadoOk(option.label)) {
+        ids.add(option.value)
+      }
+    }
+    return ids
+  }, [estadoOptions])
+  const isBlockedEstadoSelected = Boolean(idEstado && blockedEstadoIds.has(idEstado))
+  const shouldBlockFinalizadoOkForCurrentOt = shouldAutoMapEstadoFallidaConVisita
+  const isBlockedEstadoForCurrentOt = shouldBlockFinalizadoOkForCurrentOt && isBlockedEstadoSelected
+  const selectedEstadoLabel = useMemo(() => {
+    if (!idEstado) return ''
+    return estadoOptions.find((option) => option.value === idEstado)?.label ?? ''
+  }, [idEstado, estadoOptions])
+
+  useEffect(() => {
+    if (!shouldAutoMapEstadoFallidaConVisita) return
+    if (idEstado) return
+    if (!estadoOptions.length) return
+
+    const target = estadoOptions.find((option) => {
+      const label = normalizeText(option.label)
+      return label.includes('cerrado') && label.includes('imposibilidad') && label.includes('tecnica')
+    })
+    if (!target) return
+    setIdEstado(target.value)
+  }, [shouldAutoMapEstadoFallidaConVisita, idEstado, estadoOptions])
+
+  useEffect(() => {
+    if (!shouldBlockFinalizadoOkForCurrentOt) return
+    if (!idEstado) return
+    if (!blockedEstadoIds.has(idEstado)) return
+    setIdEstado('')
+  }, [blockedEstadoIds, idEstado, shouldBlockFinalizadoOkForCurrentOt])
 
   const hasGeoFix = latitud !== null && longitud !== null && geoAccuracy !== null
   const geoIsPrecise = geoAccuracy !== null && geoAccuracy <= GEO_TARGET_ACCURACY_METERS
@@ -359,19 +574,46 @@ const RegistrarOTAgendaPage = () => {
     hiddenIdVendedor !== null &&
     hiddenIdRuta !== null &&
     hiddenIdGrupo !== null &&
-    hiddenIdTipoServicio !== null &&
+    effectiveIdTipoServicio !== null &&
     hiddenIdSucursal !== null
 
   const missingHeaderFields = useMemo(() => {
     const missing: string[] = []
     if (hiddenIdVendedor === null) missing.push('vendedor (idUsuario/idVendedor)')
-    if (hiddenIdRuta === null) missing.push('ruta/grupo (idRuta/idGrupo)')
-    if (hiddenIdTipoServicio === null) missing.push('tipo de servicio (idTipoServicio)')
+    if (hiddenIdRuta === null) {
+      if (isManualMode && manualRouteResolution.hasMultiple) {
+        missing.push('ruta/grupo (el usuario tiene mas de un registro en tbl_ruta)')
+      } else if (isManualMode) {
+        missing.push('ruta/grupo (no se encontro registro en tbl_ruta para el usuario)')
+      } else {
+        missing.push('ruta/grupo (idRuta/idGrupo)')
+      }
+    }
+    if (effectiveIdTipoServicio === null) missing.push('tipo de servicio (idTipoServicio)')
     if (hiddenIdSucursal === null) missing.push('sucursal (idSucursal)')
     return missing
-  }, [hiddenIdRuta, hiddenIdSucursal, hiddenIdTipoServicio, hiddenIdVendedor])
+  }, [effectiveIdTipoServicio, hiddenIdRuta, hiddenIdSucursal, hiddenIdVendedor, isManualMode, manualRouteResolution.hasMultiple])
 
-  const canSubmitBase = Boolean(session?.idUsuario && hasRequiredIds && parsedEstadoId !== null && otVisible && clienteVisible)
+  const tipoServicioHeaderWarning = useMemo(() => {
+    if (!hasAttemptedSubmit || effectiveIdTipoServicio !== null) return null
+    return isManualMode
+      ? 'Debes seleccionar un tipo de servicio para continuar.'
+      : 'No se pudo resolver tipo de servicio automaticamente. Selecciona uno para continuar.'
+  }, [effectiveIdTipoServicio, hasAttemptedSubmit, isManualMode])
+
+  const parsedOrdenTrabajo = parseNumber(otInputValue)
+  const parsedCodigoCliente = parseNumber(clienteInputValue)
+  const hasValidOrdenTrabajo = parsedOrdenTrabajo !== null && parsedOrdenTrabajo > 0
+  const hasValidCodigoCliente = parsedCodigoCliente !== null && parsedCodigoCliente > 0
+
+  const canSubmitBase = Boolean(
+    session?.idUsuario &&
+      hasRequiredIds &&
+      parsedEstadoId !== null &&
+      hasValidOrdenTrabajo &&
+      hasValidCodigoCliente &&
+      !isBlockedEstadoForCurrentOt
+  )
 
   const requestGeolocation = () => {
     if (typeof navigator === 'undefined' || !navigator.geolocation) {
@@ -628,15 +870,37 @@ const RegistrarOTAgendaPage = () => {
   }, [])
 
   useEffect(() => {
-    if (!session?.sessionToken || session?.hostName) return
+    if (!session?.sessionToken) return
+    const needsSessionRefresh = !session.hostName || !session.idUsuario || session.idUsuario <= 0
+    if (!needsSessionRefresh) return
     let cancelled = false
 
     void fetchMe(session.sessionToken)
       .then((me) => {
-        if (cancelled || !me?.hostName) return
+        if (cancelled || !me) return
+        const nextHostName = me.hostName || session.hostName
+        const nextIdUsuario = typeof me.idUsuario === 'number' && Number.isFinite(me.idUsuario) && me.idUsuario > 0 ? me.idUsuario : session.idUsuario
+        const nextNombre = me.nombre || session.nombre
+        const nextRol = me.rol || session.rol
+        const nextIdRol = typeof me.idRol === 'number' && Number.isFinite(me.idRol) ? me.idRol : session.idRol
+        const nextIdSucursal =
+          typeof me.idSucursal === 'number' && Number.isFinite(me.idSucursal) && me.idSucursal > 0 ? me.idSucursal : session.idSucursal
+        const noChanges =
+          nextHostName === session.hostName &&
+          nextIdUsuario === session.idUsuario &&
+          nextNombre === session.nombre &&
+          nextRol === session.rol &&
+          nextIdRol === session.idRol &&
+          nextIdSucursal === session.idSucursal
+        if (noChanges) return
         useSessionStore.getState().setSession({
           ...session,
-          hostName: me.hostName,
+          hostName: nextHostName,
+          idUsuario: nextIdUsuario,
+          nombre: nextNombre,
+          rol: nextRol,
+          idRol: nextIdRol,
+          idSucursal: nextIdSucursal,
         })
       })
       .catch(() => {
@@ -650,19 +914,19 @@ const RegistrarOTAgendaPage = () => {
 
   const mutation = useMutation({
     mutationFn: async (coordinates?: { latitud: number; longitud: number }) => {
-      const ordenTrabajo = parseNumber(otVisible) ?? 0
-      const codigoCliente = parseNumber(clienteVisible) ?? 0
+      const ordenTrabajo = parsedOrdenTrabajo ?? 0
+      const codigoCliente = parsedCodigoCliente ?? 0
       const payload = {
         idUsuario: session?.idUsuario ?? 0,
         idVendedor: hiddenIdVendedor ?? 0,
         idGrupo: hiddenIdGrupo ?? 0,
-        idTipoServicio: hiddenIdTipoServicio ?? 0,
+        idTipoServicio: effectiveIdTipoServicio ?? 0,
         ordenTrabajo,
         idEstado: parsedEstadoId ?? 0,
         codigoCliente,
         idSucursal: hiddenIdSucursal ?? 0,
         nombre: tecnicoVisible,
-        origen: 'OT_WEB',
+        origen: origenRegistro,
         observacion: observacion.trim(),
         total: 0,
         idUsuarioE: 0,
@@ -679,18 +943,35 @@ const RegistrarOTAgendaPage = () => {
       setSubmitError(null)
       setRegistroGuardado(true)
       setConfirmModalOpen(false)
-      if (idVenta || orden) {
-        setSuccess(`Venta registrada correctamente. IdVenta: ${idVenta ?? '-'} | OT: ${orden ?? '-'}`)
-      } else {
-        setSuccess('Venta registrada correctamente.')
-      }
-      queryClient.invalidateQueries({ queryKey: ['ot-dashboard-lista'] })
+      const message = idVenta || orden ? `Registro exitoso. NroTrans.: ${idVenta ?? '-'} | OT: ${orden ?? '-'}` : 'Registro exitoso.'
+      setSuccess(message)
+      setSuccessModalMessage(message)
+      setSuccessModalOpen(true)
+      queryClient.invalidateQueries({ queryKey: ['ot-dashboard-lista'], refetchType: 'all' })
     },
     onError: () => {
       setSuccess(null)
+      setSuccessModalOpen(false)
+      setSuccessModalMessage('')
       setSubmitError('No se pudo guardar la OT. Revisa los datos de cabecera y estado.')
     },
   })
+
+  const handleBackToDashboard = () => {
+    const refreshToken = Date.now()
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(OT_DASHBOARD_FORCE_REFRESH_KEY, String(refreshToken))
+    }
+    navigate('/GestionOTs', {
+      replace: true,
+      state: { refreshToken },
+    })
+  }
+
+  const handleSuccessModalAccept = () => {
+    setSuccessModalOpen(false)
+    handleBackToDashboard()
+  }
 
   const runPreRegisterValidations = async (): Promise<boolean> => {
     const routeId = hiddenIdRuta ?? hiddenIdGrupo ?? null
@@ -793,6 +1074,14 @@ const RegistrarOTAgendaPage = () => {
       return
     }
     if (!canSubmitBase) {
+      if (isBlockedEstadoForCurrentOt) {
+        setSubmitError(
+          `No se permite guardar con estado "${selectedEstadoLabel || 'CERRADO - FINALIZADO OK'}"${
+            isManualMode ? ' en registro Manual.' : '.'
+          }`
+        )
+        return
+      }
       setSubmitError('Faltan datos requeridos para registrar la OT.')
       return
     }
@@ -800,13 +1089,14 @@ const RegistrarOTAgendaPage = () => {
   }
 
   const missingParamsMessage = useMemo(() => {
+    if (isManualMode) return null
     const missing: string[] = []
     if (!clienteNro) missing.push('clienteNro')
     if (!ot) missing.push('ot')
     if (!tor) missing.push('tor')
     if (!tecnicoNombre) missing.push('tecnicoNombre')
     return missing.length > 0 ? `Faltan parametros para consultar cabecera: ${missing.join(', ')}.` : null
-  }, [clienteNro, ot, tecnicoNombre, tor])
+  }, [clienteNro, isManualMode, ot, tecnicoNombre, tor])
 
   const cabeceraErrorDetail = useMemo(() => {
     const error = cabeceraQuery.error
@@ -885,17 +1175,50 @@ const RegistrarOTAgendaPage = () => {
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-700">Tipo Instalacion</label>
-              <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={tipoServicioLabel} disabled />
+              {hiddenIdTipoServicio !== null && !isManualMode ? (
+                <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={tipoServicioLabel} disabled />
+              ) : (
+                <select
+                  className="input-base rounded-md py-2 text-sm"
+                  value={idTipoServicioManual}
+                  onChange={(event) => setIdTipoServicioManual(event.target.value)}
+                >
+                  <option value="">{tiposServicioQuery.isLoading ? 'Cargando tipos...' : 'Selecciona tipo de servicio'}</option>
+                  {tipoServicioOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-700">Nro Orden</label>
-              <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={otVisible} disabled />
+              <input
+                className={`input-base rounded-md py-2 text-sm ${isManualMode ? '' : 'bg-slate-50'}`}
+                value={otInputValue}
+                onChange={(event) => {
+                  if (!isManualMode) return
+                  setOtManualInput(event.target.value.replace(/[^\d]/g, ''))
+                }}
+                placeholder={isManualMode ? 'Ingresa nro de orden' : undefined}
+                disabled={!isManualMode}
+              />
             </div>
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-700">Cod Cliente</label>
-              <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={clienteVisible} disabled />
+              <input
+                className={`input-base rounded-md py-2 text-sm ${isManualMode ? '' : 'bg-slate-50'}`}
+                value={clienteInputValue}
+                onChange={(event) => {
+                  if (!isManualMode) return
+                  setClienteManualInput(event.target.value.replace(/[^\d]/g, ''))
+                }}
+                placeholder={isManualMode ? 'Ingresa cod cliente' : undefined}
+                disabled={!isManualMode}
+              />
             </div>
 
             <div>
@@ -903,8 +1226,14 @@ const RegistrarOTAgendaPage = () => {
               <select className="input-base rounded-md py-2 text-sm" value={idEstado} onChange={(event) => setIdEstado(event.target.value)}>
                 <option value="">{estadosQuery.isLoading ? 'Cargando estados...' : 'Selecciona estado'}</option>
                 {estadoOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
+                  <option
+                    key={option.value}
+                    value={option.value}
+                    disabled={shouldBlockFinalizadoOkForCurrentOt && blockedEstadoIds.has(option.value)}
+                  >
+                    {shouldBlockFinalizadoOkForCurrentOt && blockedEstadoIds.has(option.value)
+                      ? `${option.label} (${isManualMode ? 'No permitido para Manual' : 'No permitido para Fallida con visita'})`
+                      : option.label}
                   </option>
                 ))}
               </select>
@@ -915,8 +1244,13 @@ const RegistrarOTAgendaPage = () => {
               <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={sucursalVisible} disabled />
             </div>
 
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">Origen</label>
+              <input className="input-base rounded-md bg-slate-50 py-2 text-sm" value={origenRegistro} disabled />
+            </div>
+
             <div className="md:col-span-2">
-              <label className="mb-1 block text-xs font-semibold text-slate-700">Observacion</label>
+              <label className="mb-1 block text-xs font-semibold text-slate-700">Bitacora</label>
               <textarea
                 className="input-base h-24 resize-none rounded-md py-2 text-sm"
                 value={observacion}
@@ -927,16 +1261,22 @@ const RegistrarOTAgendaPage = () => {
           </div>
         </FormCard>
 
-        {missingParamsMessage ? (
+        {!isManualMode && missingParamsMessage ? (
           <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{missingParamsMessage}</div>
         ) : null}
-        {!missingParamsMessage ? (
+        {!isManualMode && !missingParamsMessage ? (
           <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 break-words">
             Params SP: clienteNro={spParams.clienteNro}, ot={spParams.ot}, tor='{spParams.tor}', grupo='{spParams.grupo}', tecnicoNombre='{spParams.tecnicoNombre}'
           </div>
         ) : null}
+        {manualRouteIssue ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{manualRouteIssue}</div>
+        ) : null}
         {hiddenHeaderMessage ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{hiddenHeaderMessage}</div>
+        ) : null}
+        {tipoServicioHeaderWarning ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">{tipoServicioHeaderWarning}</div>
         ) : null}
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-relaxed text-slate-600 break-words">
           Geolocalizacion: lat={latitud ?? 'N/D'}, lon={longitud ?? 'N/D'}
@@ -958,28 +1298,34 @@ const RegistrarOTAgendaPage = () => {
           </div>
           {geoError ? <div className="mt-2 text-rose-600">{geoError}</div> : null}
         </div>
-        {cabeceraQuery.isError ? (
+        {!isManualMode && cabeceraQuery.isError ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
             No se pudo cargar la cabecera de venta OT.
             {cabeceraErrorDetail ? <div className="mt-2 break-all text-xs">{cabeceraErrorDetail}</div> : null}
           </div>
         ) : null}
-        {showOtDetailError ? (
+        {!isManualMode && showOtDetailError ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
             No se pudo obtener el detalle de la OT por numero (`fetchOtByNumero`).
             {otDetailErrorDetail ? <div className="mt-2 break-all text-xs">{otDetailErrorDetail}</div> : null}
           </div>
         ) : null}
-        {!cabeceraQuery.isLoading && !cabeceraQuery.isError && cabeceraRows.length > 0 && !sucursalVisible ? (
+        {!isManualMode && !cabeceraQuery.isLoading && !cabeceraQuery.isError && cabeceraRows.length > 0 && !sucursalVisible ? (
           <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
             La API de cabecera no devolvio la sucursal.
           </div>
         ) : null}
         {submitError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{submitError}</div> : null}
+        {!submitError && isBlockedEstadoForCurrentOt ? (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">
+            No se permite guardar con estado "{selectedEstadoLabel || 'CERRADO - FINALIZADO OK'}"
+            {isManualMode ? ' en registro Manual.' : '.'}
+          </div>
+        ) : null}
         {success ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-600">{success}</div> : null}
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={() => navigate(-1)} disabled={mutation.isPending || isPrevalidating}>
+          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={handleBackToDashboard} disabled={mutation.isPending || isPrevalidating}>
             {success ? 'Volver' : 'Cancelar'}
           </Button>
           <Button
@@ -1011,6 +1357,19 @@ const RegistrarOTAgendaPage = () => {
           <p className="font-medium text-slate-700">{calibrationMessage}</p>
         </div>
         <p className="mt-3 text-xs text-slate-500">Este proceso puede tardar para obtener la mejor precision posible.</p>
+      </Modal>
+
+      <Modal
+        open={successModalOpen}
+        title="Registro exitoso"
+        onClose={handleSuccessModalAccept}
+        actions={
+          <Button type="button" onClick={handleSuccessModalAccept}>
+            OK
+          </Button>
+        }
+      >
+        <p>{successModalMessage || success || 'Registro exitoso.'}</p>
       </Modal>
     </div>
   )

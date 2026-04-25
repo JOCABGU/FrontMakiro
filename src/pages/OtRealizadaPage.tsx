@@ -5,19 +5,24 @@ import axios from 'axios'
 import Button from '../components/common/Button'
 import Field from '../components/common/Field'
 import FormCard from '../components/common/FormCard'
+import Modal from '../components/common/Modal'
 import Tabs from '../components/common/Tabs'
 import Table, { type Column } from '../components/common/Table'
 import {
   buscarSerialCargoUsuario,
   fetchChipIdBySerie,
   fetchEstados,
+  fetchKitsDecodificadores,
+  fetchNomencladores,
   fetchProductosCargoUsuario,
   fetchProductos,
   fetchProductosSinFungible,
   fetchProductosMascara,
   fetchTipoMaterial,
+  fetchTiposServicio,
   validarCargoUsuarioConProc,
   validarCargoUsuarioConProcCunr2,
+  validarEstadoSerieRegistroOt,
   validarSerieSaldo,
   validarSerieChipUnico,
   type CatalogItem,
@@ -57,6 +62,7 @@ type MaterialRow = {
   idTipoMaterial: number
   tipoMaterialLabel: string
   entregado: boolean
+  requiresChip: boolean
 }
 
 type CargoUsuarioRow = {
@@ -85,7 +91,14 @@ type ProductMeta = {
   mascaraSerie: string
   mascaraChipId: string
   esSerializado: boolean
+  seriePermiteEspacios: boolean
+  chipPermiteEspacios: boolean
+  permiteDecimales: boolean
 }
+
+const RETIRED_MATERIAL_IDS = new Set([2, 5])
+const CONTROL_REMOTO_PRODUCT_ID = 11
+const PILAS_PRODUCT_ID = 12
 
 const normalizeKey = (value: string): string => value.replace(/[_\-\s]/g, '').toLowerCase()
 
@@ -160,6 +173,27 @@ const toIsoDateParam = (value?: string): string => {
   const month = String(parsed.getMonth() + 1).padStart(2, '0')
   const day = String(parsed.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+const isRetiredMaterialRow = (row: Pick<MaterialRow, 'idTipoMaterial' | 'tipoMaterialLabel'>): boolean => {
+  if (RETIRED_MATERIAL_IDS.has(row.idTipoMaterial)) return true
+  const normalizedLabel = String(row.tipoMaterialLabel ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  return normalizedLabel.includes('retirad')
+}
+
+const normalizeTipoMaterialForKit = (idTipoMaterial: number): number => {
+  return idTipoMaterial === 5 ? 2 : idTipoMaterial
+}
+
+const matchesTipoMaterialForKit = (rowTipoMaterialId: number, targetTipoMaterialId: number): boolean => {
+  if (targetTipoMaterialId === 2 || targetTipoMaterialId === 5) {
+    return rowTipoMaterialId === 2 || rowTipoMaterialId === 5
+  }
+  return rowTipoMaterialId === targetTipoMaterialId
 }
 
 const buildFallbackMask = (digits: number): string => {
@@ -289,9 +323,16 @@ const productMaskChipKeys = [
 const productMaskImeiDigitKeys = [
   'digitosImei',
   'DigitosImei',
+  'DigitosIMEI',
   'digitos_imei',
   'cantidadDigitosImei',
   'cantidad_digitos_imei',
+  'CantDigitosSerial',
+  'cantDigitosSerial',
+  'CantidadDigitosSerial',
+  'cantidadDigitosSerial',
+  'DigitosSerial',
+  'digitosSerial',
   'serieLength',
   'SerieLength',
   'longitudSerie',
@@ -301,20 +342,105 @@ const productMaskImeiDigitKeys = [
 const productMaskChipDigitKeys = [
   'digitosChipId',
   'DigitosChipId',
+  'DigitosChipID',
+  'DigitosChipid',
   'digitos_chipid',
   'cantidadDigitosChipId',
   'cantidad_digitos_chipid',
+  'CantDigitosChipId',
+  'CantDigitosChipID',
+  'cantDigitosChipId',
+  'cantDigitosChipID',
+  'cantidadDigitosChipID',
   'chipLength',
   'ChipLength',
   'longitudChip',
   'LongitudChip',
 ]
+const productSerieSpaceKeys = ['serieTieneEspacio', 'SerieTieneEspacio', 'TieneEspacioSerial', 'tieneEspacioSerial']
+const productChipSpaceKeys = [
+  'chipIdTieneEspacio',
+  'ChipIdTieneEspacio',
+  'ChipIDTieneEspacio',
+  'TieneEspacioChipId',
+  'TieneEspacioChipID',
+  'tieneEspacioChipId',
+]
+const productAllowsDecimalKeys = ['permiteDecimales', 'PermiteDecimales', 'PermiteDecimal', 'permiteDecimal', 'PermiteDecimale']
+const OT_DASHBOARD_FORCE_REFRESH_KEY = 'ot-dashboard-force-refresh'
+
+const normalizeValidationMessage = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+
+const shouldAllowRetiredValidationFailure = (observacion?: string): boolean => {
+  const normalized = normalizeValidationMessage(observacion ?? '')
+  if (!normalized) return false
+  return (
+    normalized.includes('no existen en saldo') ||
+    normalized.includes('no existe en saldo') ||
+    normalized.includes('no existe') ||
+    normalized.includes('verificar chipid') ||
+    normalized.includes('registrado mas de 1 vez')
+  )
+}
+
+const readValidationMessageFromError = (error: unknown): string => {
+  if (!axios.isAxiosError(error)) return ''
+  const data = error.response?.data
+  if (typeof data === 'string') return data
+  if (data && typeof data === 'object') {
+    const direct = (data as { message?: unknown; Message?: unknown }).message ?? (data as { Message?: unknown }).Message
+    if (typeof direct === 'string') return direct
+    const details = (data as { details?: unknown }).details
+    if (typeof details === 'string') return details
+    if (details && typeof details === 'object') {
+      const description = (details as { description?: unknown }).description
+      if (typeof description === 'string') return description
+    }
+  }
+  return ''
+}
+
+const extractSerieFromMessage = (message: string): string | undefined => {
+  const trimmed = message.trim()
+  if (!trimmed) return undefined
+  const matchBeforeDash = trimmed.match(/^([A-Za-z0-9-]{4,})\s*-/)
+  if (matchBeforeDash?.[1]) return matchBeforeDash[1]
+  const matchNamedSerie = trimmed.match(/serie\s*:?\s*([A-Za-z0-9-]{4,})/i)
+  if (matchNamedSerie?.[1]) return matchNamedSerie[1]
+  return undefined
+}
+
+const extractChipFromMessage = (message: string): string | undefined => {
+  const trimmed = message.trim()
+  if (!trimmed) return undefined
+  const matchNamedChip = trimmed.match(/chip\s*id\s*:?\s*([A-Za-z0-9-]{4,})/i)
+  if (matchNamedChip?.[1]) return matchNamedChip[1]
+  return undefined
+}
 
 const defaultTipoMaterialOptions: Array<{ value: string; label: string }> = [
   { value: '1', label: 'Instalado' },
   { value: '2', label: 'Retirado' },
   { value: '3', label: 'Excedente' },
 ]
+
+const tipoServicioIdKeys = ['idTipoServicio', 'Id_TipoServicio', 'id_tiposervicio', 'IdTipoServicio', 'id_tipo_servicio', 'id', 'Id']
+const tipoServicioNomencladoresKeys = [
+  'nomencladores',
+  'Nomencladores',
+  'usaNomencladores',
+  'UsaNomencladores',
+  'usarNomencladores',
+  'UsarNomencladores',
+]
+const nomencladorSuffixKeys = ['SufijoNomenclador', 'sufijoNomenclador', 'sufijo_nomenclador', 'sufijo', 'Sufijo']
+const nomencladorProductoIdKeys = ['Id_Producto', 'idProducto', 'id_producto', 'IdProducto', 'id', 'Id']
+const nomencladorProductoLabelKeys = ['Nombre', 'nombre', 'Producto', 'producto', 'Descripcion', 'descripcion']
 
 const OtRealizadaPage = () => {
   const navigate = useNavigate()
@@ -335,7 +461,10 @@ const OtRealizadaPage = () => {
   const [materialRows, setMaterialRows] = useState<MaterialRow[]>([])
   const [success, setSuccess] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [successModalOpen, setSuccessModalOpen] = useState(false)
+  const [successModalMessage, setSuccessModalMessage] = useState('')
   const [serieValidationError, setSerieValidationError] = useState<string | null>(null)
+  const [chipValidationError, setChipValidationError] = useState<string | null>(null)
   const [productoBloqueado, setProductoBloqueado] = useState(false)
   const [serieCamposBloqueados, setSerieCamposBloqueados] = useState(false)
   const [chipCamposBloqueados, setChipCamposBloqueados] = useState(false)
@@ -343,6 +472,7 @@ const OtRealizadaPage = () => {
   const [chipFromDatabase, setChipFromDatabase] = useState(false)
   const [chipLockedAfterManualRetired, setChipLockedAfterManualRetired] = useState(false)
   const [chipUniquenessState, setChipUniquenessState] = useState<'idle' | 'valid' | 'invalid'>('idle')
+  const [cantidadBlurConfirmada, setCantidadBlurConfirmada] = useState(false)
   const [isPrevalidating, setIsPrevalidating] = useState(false)
   const [isAddingMaterial, setIsAddingMaterial] = useState(false)
   const [detalleGuardado, setDetalleGuardado] = useState(false)
@@ -377,9 +507,12 @@ const OtRealizadaPage = () => {
   const cargoUsuarioChipRef = useRef<HTMLInputElement | null>(null)
   const cargoUsuarioCantidadRef = useRef<HTMLInputElement | null>(null)
   const cargoUsuarioChipAutoRef = useRef(false)
+  const skipMaterialBlurValidationRef = useRef(false)
+  const retiredRowsWithoutSaldoPairRef = useRef<Set<string>>(new Set())
   const lastValidatedSerieRef = useRef<{ key: string; sePuede: boolean } | null>(null)
   const autoAdvanceToChipRef = useRef(false)
   const saldoPopupTimeoutRef = useRef<number | null>(null)
+  const nomencladoresAutocargaRef = useRef(false)
 
   const ventaQuery = useQuery({
     queryKey: ['ot-detalle-venta', numeroOrden],
@@ -402,6 +535,11 @@ const OtRealizadaPage = () => {
       idRuta,
     [idRuta, rowData, venta]
   )
+  const idRutaValidacion = useMemo(() => {
+    if (idRuta && idRuta > 0) return idRuta
+    if (idGrupo && idGrupo > 0) return idGrupo
+    return null
+  }, [idGrupo, idRuta])
   const fechaTrabajo = useMemo(() => {
     const fromVenta = venta ? readString(venta, ['fechaEjecucion', 'Fecha_Ejecucion', 'Fecha_Ejecucion']) : ''
     const fromState = navState?.fecha ?? ''
@@ -429,6 +567,28 @@ const OtRealizadaPage = () => {
     () => (venta ? readNumber(venta, ['idTipoServicio', 'Id_TipoServicio', 'id_tiposervicio']) : null) ?? 1,
     [venta]
   )
+  const tiposServicioQuery = useQuery({
+    queryKey: ['catalogos-tipo-servicio-ot-detalle'],
+    queryFn: fetchTiposServicio,
+  })
+  const tipoServicioUsaNomencladores = useMemo(() => {
+    if (!tipoServicioId || tipoServicioId <= 0) return false
+    const row = (tiposServicioQuery.data ?? []).find((item) => {
+      const id = readNumber(item, tipoServicioIdKeys)
+      return id !== null && id === tipoServicioId
+    })
+    if (!row) return false
+    return readBoolean(row, tipoServicioNomencladoresKeys) === true
+  }, [tipoServicioId, tiposServicioQuery.data])
+  const nomencladoresQuery = useQuery({
+    queryKey: ['catalogos-nomencladores-ot-detalle'],
+    queryFn: fetchNomencladores,
+    enabled: tipoServicioUsaNomencladores,
+  })
+  const kitsDecodificadoresQuery = useQuery({
+    queryKey: ['catalogos-kits-decodificadores-ot-detalle'],
+    queryFn: fetchKitsDecodificadores,
+  })
 
   const estadosQuery = useQuery({
     queryKey: ['catalogos-estados-ot-detalle'],
@@ -447,6 +607,88 @@ const OtRealizadaPage = () => {
     )
     return mapped.length > 0 ? mapped : defaultTipoMaterialOptions
   }, [tipoMaterialQuery.data])
+  useEffect(() => {
+    if (nomencladoresAutocargaRef.current) return
+    if (!ventaQuery.isFetched || ventaQuery.isLoading) return
+    if (tiposServicioQuery.isLoading) return
+    if (!tipoServicioUsaNomencladores) {
+      nomencladoresAutocargaRef.current = true
+      return
+    }
+    if (nomencladoresQuery.isLoading) return
+
+    const codigoCliente = clienteVisible.replace(/\D/g, '')
+    if (!codigoCliente) {
+      nomencladoresAutocargaRef.current = true
+      return
+    }
+
+    const tipoMaterialAutoValue = tipoMaterialId || tipoMaterialOptions[0]?.value || '1'
+    const tipoMaterialAutoId = Number(tipoMaterialAutoValue)
+    if (!Number.isFinite(tipoMaterialAutoId) || tipoMaterialAutoId <= 0) {
+      nomencladoresAutocargaRef.current = true
+      return
+    }
+    const tipoMaterialAutoLabel = tipoMaterialOptions.find((option) => option.value === tipoMaterialAutoValue)?.label ?? tipoMaterialAutoValue
+
+    const nomencladoresRows = nomencladoresQuery.data ?? []
+    if (nomencladoresRows.length === 0) {
+      nomencladoresAutocargaRef.current = true
+      return
+    }
+
+    const counts = new Map<string, number>()
+    for (const char of codigoCliente) {
+      counts.set(char, (counts.get(char) ?? 0) + 1)
+    }
+
+    const productBySuffix = new Map<string, { idProducto: number; producto: string }>()
+    for (const row of nomencladoresRows) {
+      const suffix = readString(row, nomencladorSuffixKeys).trim()
+      const idProducto = readNumber(row, nomencladorProductoIdKeys)
+      if (!suffix || idProducto === null || idProducto <= 0) continue
+      const producto = readString(row, nomencladorProductoLabelKeys).trim() || String(idProducto)
+      if (!productBySuffix.has(suffix)) {
+        productBySuffix.set(suffix, { idProducto, producto })
+      }
+    }
+
+    const generatedRows: MaterialRow[] = []
+    for (const [suffix, cantidadGenerada] of counts.entries()) {
+      const product = productBySuffix.get(suffix)
+      if (!product || cantidadGenerada <= 0) continue
+      generatedRows.push({
+        id: `nomen-${suffix}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+        idProducto: product.idProducto,
+        producto: product.producto,
+        serie: '',
+        chipId: '',
+        cantidad: cantidadGenerada,
+        idTipoMaterial: tipoMaterialAutoId,
+        tipoMaterialLabel: tipoMaterialAutoLabel,
+        entregado: true,
+        requiresChip: false,
+      })
+    }
+
+    if (generatedRows.length > 0) {
+      setMaterialRows((current) => (current.length > 0 ? current : generatedRows))
+      if (!tipoMaterialId) {
+        setTipoMaterialId(tipoMaterialAutoValue)
+      }
+    }
+    nomencladoresAutocargaRef.current = true
+  }, [
+    clienteVisible,
+    tipoMaterialId,
+    tipoMaterialOptions,
+    tipoServicioUsaNomencladores,
+    tiposServicioQuery.isLoading,
+    ventaQuery.isFetched,
+    ventaQuery.isLoading,
+    nomencladoresQuery.data,
+    nomencladoresQuery.isLoading,
+  ])
   const selectedTipoMaterialLabel =
     tipoMaterialOptions.find((option) => option.value === tipoMaterialId)?.label?.toLowerCase() ?? ''
   const isInstalledType =
@@ -493,6 +735,39 @@ const OtRealizadaPage = () => {
       ),
     [productosQuery.data]
   )
+  const kitDecodificadorProductoIds = useMemo(() => {
+    const set = new Set<number>()
+    for (const item of kitsDecodificadoresQuery.data ?? []) {
+      const id = readNumber(item, ['idProducto', 'Id_Producto', 'id_producto', 'IdProducto', 'id', 'Id'])
+      if (id !== null && id > 0) {
+        set.add(id)
+      }
+    }
+    return set
+  }, [kitsDecodificadoresQuery.data])
+  const productoLabelById = useMemo(() => {
+    const map = new Map<number, string>()
+    for (const item of productosQuery.data ?? []) {
+      const id = readNumber(item, ['idProducto', 'Id_Producto', 'id_producto', 'IdProducto', 'id', 'Id'])
+      const label = readString(item, ['producto', 'Producto', 'nombre', 'Nombre', 'descripcion', 'Descripcion']).trim()
+      if (id !== null && id > 0 && label) {
+        map.set(id, label)
+      }
+    }
+    for (const option of productoOptions) {
+      const id = Number(option.value)
+      if (Number.isFinite(id) && id > 0 && option.label.trim()) {
+        map.set(id, option.label.trim())
+      }
+    }
+    if (!map.has(CONTROL_REMOTO_PRODUCT_ID)) {
+      map.set(CONTROL_REMOTO_PRODUCT_ID, 'CONTROL_REMOTO')
+    }
+    if (!map.has(PILAS_PRODUCT_ID)) {
+      map.set(PILAS_PRODUCT_ID, 'PILAS')
+    }
+    return map
+  }, [productoOptions, productosQuery.data])
   const cargoUsuarioProductoOptions = useMemo(
     () =>
       mapOptions(
@@ -533,6 +808,9 @@ const OtRealizadaPage = () => {
         const esSerializado =
           digitosImei > 0 ||
           readBoolean(item, ['esSerializado', 'EsSerializado', 'serializado', 'Serializado', 'tieneSerial', 'TieneSerial']) === true
+        const seriePermiteEspacios = readBoolean(item, productSerieSpaceKeys) ?? false
+        const chipPermiteEspacios = readBoolean(item, productChipSpaceKeys) ?? false
+        const permiteDecimales = readBoolean(item, productAllowsDecimalKeys) ?? true
 
         return {
           id: String(id),
@@ -542,6 +820,9 @@ const OtRealizadaPage = () => {
           mascaraSerie,
           mascaraChipId,
           esSerializado,
+          seriePermiteEspacios,
+          chipPermiteEspacios,
+          permiteDecimales,
         }
       })
       .filter((item): item is ProductMeta => Boolean(item))
@@ -572,6 +853,9 @@ const OtRealizadaPage = () => {
         const esSerializado =
           digitosImei > 0 ||
           readBoolean(item, ['esSerializado', 'EsSerializado', 'serializado', 'Serializado', 'tieneSerial', 'TieneSerial']) === true
+        const seriePermiteEspacios = readBoolean(item, productSerieSpaceKeys) ?? false
+        const chipPermiteEspacios = readBoolean(item, productChipSpaceKeys) ?? false
+        const permiteDecimales = readBoolean(item, productAllowsDecimalKeys) ?? true
 
         return {
           id: String(id),
@@ -581,6 +865,9 @@ const OtRealizadaPage = () => {
           mascaraSerie,
           mascaraChipId,
           esSerializado,
+          seriePermiteEspacios,
+          chipPermiteEspacios,
+          permiteDecimales,
         }
       })
       .filter((item): item is ProductMeta => Boolean(item))
@@ -589,6 +876,16 @@ const OtRealizadaPage = () => {
     () => cargoUsuarioProductoMetas.find((item) => item.id === cargoUsuarioProductoId) ?? null,
     [cargoUsuarioProductoId, cargoUsuarioProductoMetas]
   )
+  const cargoUsuarioMetaByProductoId = useMemo(() => {
+    const map = new Map<number, ProductMeta>()
+    cargoUsuarioProductoMetas.forEach((meta) => {
+      const parsedId = Number(meta.id)
+      if (Number.isFinite(parsedId) && parsedId > 0) {
+        map.set(parsedId, meta)
+      }
+    })
+    return map
+  }, [cargoUsuarioProductoMetas])
   const cargoUsuarioNeedsSerie = (cargoUsuarioSelectedMeta?.digitosImei ?? 0) > 0
   const cargoUsuarioNeedsChip = (cargoUsuarioSelectedMeta?.digitosChipId ?? 0) > 0
   const cargoUsuarioSerieMask = cargoUsuarioSelectedMeta?.mascaraSerie ?? ''
@@ -620,6 +917,10 @@ const OtRealizadaPage = () => {
   const cargoUsuarioChipLista = cargoUsuarioActiveChip && Boolean(cargoUsuarioChipId.trim()) && cargoUsuarioChipDigitsComplete
   const cargoUsuarioSerieFlujoOk = !cargoUsuarioActiveSerie || (cargoUsuarioSerieLista && cargoUsuarioSerieBloqueada)
   const cargoUsuarioChipFlujoOk = !cargoUsuarioActiveChip || (cargoUsuarioChipLista && cargoUsuarioChipBloqueado)
+  const cargoUsuarioChipGateBySerie =
+    !cargoUsuarioNeedsChip ||
+    !cargoUsuarioNeedsSerie ||
+    (cargoUsuarioTieneSerie && cargoUsuarioSerieBloqueada && !cargoUsuarioSerieError)
   const cargoUsuarioSerializadoTieneAlMenosUnDato =
     !cargoUsuarioNeedsSerie ||
     cargoUsuarioSerieLista ||
@@ -675,11 +976,46 @@ const OtRealizadaPage = () => {
     lockProducto()
   }
 
+  const handleBackToDashboard = () => {
+    const refreshToken = Date.now()
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(OT_DASHBOARD_FORCE_REFRESH_KEY, String(refreshToken))
+    }
+    navigate('/GestionOTs', { state: { refreshToken } })
+  }
+
+  const handleSuccessModalAccept = () => {
+    setSuccessModalOpen(false)
+    handleBackToDashboard()
+  }
+
+  const handleCantidadBlur = () => {
+    if (skipMaterialBlurValidationRef.current) {
+      skipMaterialBlurValidationRef.current = false
+      return
+    }
+    setCantidadBlurConfirmada(true)
+  }
+
+  const handleCantidadKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
+    if (event.key !== 'Enter') return
+    // Evita submit accidental del formulario desde el teclado numerico movil.
+    event.preventDefault()
+    setCantidadBlurConfirmada(true)
+    event.currentTarget.blur()
+  }
+
   const handleChipFocus = () => {
     lockProducto()
   }
 
   const enterManualChipMode = () => {
+    if (chipDigitsRequired <= 0) {
+      setAllowManualChipId(false)
+      setChipCamposBloqueados(true)
+      focusCantidadField()
+      return
+    }
     setChipId('')
     setSerieCamposBloqueados(true)
     setChipCamposBloqueados(false)
@@ -695,34 +1031,49 @@ const OtRealizadaPage = () => {
   const chipIdMask = selectedProductMeta?.mascaraChipId ?? ''
   const serieDigitsRequired = selectedProductMeta?.digitosImei ?? 0
   const chipDigitsRequired = selectedProductMeta?.digitosChipId ?? 0
-  const serieDigitsNeeded = serieDigitsRequired > 0 ? serieDigitsRequired : countMaskTokens(serieMask)
-  const chipDigitsNeeded = chipDigitsRequired > 0 ? chipDigitsRequired : countMaskTokens(chipIdMask)
+  const isNonSerializedProduct = serieDigitsRequired === 0 && chipDigitsRequired === 0
+  const seriePermiteEspacios = selectedProductMeta?.seriePermiteEspacios ?? false
+  const chipPermiteEspacios = selectedProductMeta?.chipPermiteEspacios ?? false
+  const cantidadPermiteDecimales = selectedProductMeta?.permiteDecimales ?? true
+  const serieDigitsNeeded = isNonSerializedProduct ? 0 : serieDigitsRequired > 0 ? serieDigitsRequired : countMaskTokens(serieMask)
+  const chipDigitsNeeded = isNonSerializedProduct ? 0 : chipDigitsRequired > 0 ? chipDigitsRequired : 0
   const needsSerie = serieDigitsNeeded > 0
-  const needsChip = chipDigitsNeeded > 0
-  const canUseChipId = needsChip || allowManualChipId
+  const needsChip = chipDigitsRequired > 0
+  const tipoMaterialNumero = Number(tipoMaterialId)
+  const isRetiredE18Type = Number.isFinite(tipoMaterialNumero) && tipoMaterialNumero === 5
+  const requiresChipByTipo = needsChip && !isRetiredE18Type
+  const canUseChipId = requiresChipByTipo || allowManualChipId
   const isRetiredMaterial = isRetiredType
-  const shouldSkipChipField = isInstalledType || (isRetiredMaterial && chipFromDatabase)
+  const requiresChipUniqueness = !isRetiredMaterial && needsSerie && requiresChipByTipo
+  const shouldSkipChipField = isInstalledType || isRetiredE18Type || (isRetiredMaterial && chipFromDatabase && !allowManualChipId)
   const serieFilledDigits = countFilledMaskChars(serie.trim())
   const chipFilledDigits = countFilledMaskChars(chipId.trim())
   const serieDigitsComplete = !needsSerie || (serieMask ? isMaskComplete(serie.trim(), serieMask) : serieFilledDigits === serieDigitsNeeded)
-  const chipDigitsComplete = !needsChip || (chipIdMask ? isMaskComplete(chipId.trim(), chipIdMask) : chipFilledDigits === chipDigitsNeeded)
+  const chipDigitsComplete =
+    !requiresChipByTipo ||
+    shouldSkipChipField ||
+    (chipIdMask ? isMaskComplete(chipId.trim(), chipIdMask) : chipFilledDigits === chipDigitsNeeded)
   const serieDisabled = !needsSerie || serieCamposBloqueados
+  const materialFormCleared = !tipoMaterialId && !productoId
   const chipDisabled =
+    materialFormCleared ||
     shouldSkipChipField ||
     (isRetiredMaterial && chipFromDatabase && !allowManualChipId) ||
     (isRetiredMaterial && !chipFromDatabase && chipLockedAfterManualRetired) ||
-    ((!needsChip && !allowManualChipId) || chipCamposBloqueados)
-  const canAddMaterial =
+    ((!requiresChipByTipo && !allowManualChipId) || chipCamposBloqueados)
+  const canAddMaterialCore =
     !isAddingMaterial &&
     Boolean(tipoMaterialId) &&
     Boolean(productoId) &&
     Number.isFinite(Number(cantidad)) &&
     (needsSerie ? Number(cantidad) === 1 : Number(cantidad) > 0) &&
+    (!needsSerie || serieCamposBloqueados) &&
     serieDigitsComplete &&
     chipDigitsComplete &&
-    (!needsChip || shouldSkipChipField || !needsSerie || chipUniquenessState === 'valid') &&
+    (!requiresChipUniqueness || shouldSkipChipField || chipUniquenessState === 'valid') &&
     (!needsSerie || Boolean(serie.trim())) &&
-    (!needsChip || Boolean(chipId.trim()))
+    (!requiresChipByTipo || shouldSkipChipField || Boolean(chipId.trim()))
+  const canAddMaterial = canAddMaterialCore && (!needsSerie || cantidadBlurConfirmada)
 
   const focusSerieField = () => {
     requestAnimationFrame(() => {
@@ -739,6 +1090,7 @@ const OtRealizadaPage = () => {
   }
 
   const focusCantidadField = () => {
+    setCantidadBlurConfirmada(true)
     requestAnimationFrame(() => {
       cantidadInputRef.current?.focus()
       cantidadInputRef.current?.select()
@@ -767,38 +1119,56 @@ const OtRealizadaPage = () => {
 
         if (validation.chipExiste && !validation.mismoRegistro) {
           setChipUniquenessState('invalid')
-          setError('El ChipID ya esta registrado con otro serial.')
+          setError(null)
+          setChipValidationError(`Serie: ${serieTrimmed} | ChipID: ${chipTrimmed}. El ChipID pertenece a otro serial.`)
           return false
         }
 
         if (!validation.sePuede) {
+          if (isRetiredMaterial && !validation.chipExiste) {
+            // En retirados se permite continuar cuando la combinacion no existe,
+            // pero no cuando el chip pertenece a otro serial.
+            setChipUniquenessState('valid')
+            setChipValidationError(null)
+            return true
+          }
           setChipUniquenessState('invalid')
-          setError(validation.observacion?.trim() || 'La serie y el ChipID no existen en saldo.')
+          setError(null)
+          setChipValidationError(
+            `Serie: ${serieTrimmed} | ChipID: ${chipTrimmed}. ${validation.observacion?.trim() || 'La serie y el ChipID no existen en saldo.'}`
+          )
           return false
         }
 
         setChipUniquenessState('valid')
-        if (
-          error === 'El ChipID ya esta registrado con otro serial.' ||
-          error === 'La serie y el ChipID no existen en saldo.'
-        ) {
-          setError(null)
-        }
+        setChipValidationError(null)
         return true
       } catch (validationError) {
         console.error('No se pudo validar la unicidad del ChipID.', validationError)
+        if (isRetiredMaterial) {
+          setChipUniquenessState('valid')
+          setChipValidationError(null)
+          return true
+        }
         setChipUniquenessState('invalid')
-        setError('No se pudo validar la unicidad del ChipID.')
+        setError(null)
+        setChipValidationError('No se pudo validar la unicidad del ChipID.')
         return false
       }
     },
-    [error, serie, validarSerieChipUnico]
+    [isRetiredMaterial, serie, validarSerieChipUnico]
   )
 
   useEffect(() => {
     const serieTrimmed = serie.trim()
     const chipTrimmed = chipId.trim()
-    if (!needsChip || !chipTrimmed || !chipDigitsComplete) {
+    if (isRetiredMaterial) {
+      if (chipUniquenessState !== 'idle') {
+        setChipUniquenessState('idle')
+      }
+      return
+    }
+    if (!requiresChipByTipo || !chipTrimmed || !chipDigitsComplete) {
       if (chipUniquenessState !== 'idle') {
         setChipUniquenessState('idle')
       }
@@ -832,9 +1202,10 @@ const OtRealizadaPage = () => {
     chipDigitsComplete,
     chipId,
     chipUniquenessState,
+    isRetiredMaterial,
     serie,
     serieDigitsComplete,
-    needsChip,
+    requiresChipByTipo,
     needsSerie,
     validateChipUniqueness,
   ])
@@ -894,7 +1265,7 @@ const OtRealizadaPage = () => {
           serie: trimmed,
           idProducto: parsedProducto,
           idTipoMaterial: parsedTipoMaterial,
-          idRuta: idRuta ?? undefined,
+          idRuta: idRutaValidacion ?? undefined,
         })
 
         if (!validation.sePuede) {
@@ -946,7 +1317,7 @@ const OtRealizadaPage = () => {
           }
         }
 
-        setChipCamposBloqueados(shouldSkipChipField || !needsChip ? true : false)
+        setChipCamposBloqueados(shouldSkipChipField || !requiresChipByTipo ? true : false)
         setAllowManualChipId(false)
         setChipUniquenessState('valid')
         return true
@@ -955,7 +1326,12 @@ const OtRealizadaPage = () => {
         if (isRetiredMaterial) {
           setSerieValidationError(null)
           lastValidatedSerieRef.current = { key: currentKey, sePuede: true }
-          enterManualChipMode()
+          if (requiresChipByTipo && !shouldSkipChipField) {
+            enterManualChipMode()
+          } else {
+            setChipCamposBloqueados(true)
+            focusCantidadField()
+          }
           setChipUniquenessState('idle')
           return true
         }
@@ -973,8 +1349,8 @@ const OtRealizadaPage = () => {
       chipId,
       chipIdMask,
       fetchChipIdBySerie,
-      idRuta,
-      needsChip,
+      idRutaValidacion,
+      requiresChipByTipo,
       needsSerie,
       isRetiredMaterial,
       shouldSkipChipField,
@@ -989,7 +1365,7 @@ const OtRealizadaPage = () => {
 
   const advanceFromSerie = useCallback(async (): Promise<boolean> => {
     if (!needsSerie) {
-      if (needsChip && !shouldSkipChipField) {
+      if (requiresChipByTipo && !shouldSkipChipField) {
         focusChipField()
         return true
       }
@@ -1023,7 +1399,7 @@ const OtRealizadaPage = () => {
 
     setSerieCamposBloqueados(true)
 
-    if ((needsChip || allowManualChipId) && !shouldSkipChipField) {
+    if ((requiresChipByTipo || allowManualChipId) && !shouldSkipChipField) {
       focusChipField()
       return true
     }
@@ -1032,7 +1408,7 @@ const OtRealizadaPage = () => {
     return true
   }, [
     allowManualChipId,
-    needsChip,
+    requiresChipByTipo,
     needsSerie,
     shouldSkipChipField,
     serie,
@@ -1052,6 +1428,11 @@ const OtRealizadaPage = () => {
   }, [needsSerie, serie, validateSerieBalance])
 
   const handleSerieBlur = (): void => {
+    if (skipMaterialBlurValidationRef.current) {
+      skipMaterialBlurValidationRef.current = false
+      setSerieValidationError(null)
+      return
+    }
     if (!needsSerie) return
     void advanceFromSerie()
   }
@@ -1063,24 +1444,46 @@ const OtRealizadaPage = () => {
   }
 
   const advanceFromChip = useCallback(async (): Promise<boolean> => {
-    if (!needsChip) return true
+    if (shouldSkipChipField || (!requiresChipByTipo && !allowManualChipId)) return true
 
     const trimmed = chipId.trim()
     if (!trimmed) {
-      setError('Debes ingresar el ChipID del producto retirado.')
+      setError(null)
+      setChipValidationError('Debes ingresar el ChipID del producto retirado.')
       focusChipField()
       return false
     }
 
-    if (chipDigitsNeeded > 0 && !(chipIdMask ? isMaskComplete(trimmed, chipIdMask) : countFilledMaskChars(trimmed) >= chipDigitsNeeded)) {
-      setError(chipIdMask ? `El ChipID debe completar la mascara ${chipIdMask}.` : `El ChipID debe completar ${chipDigitsNeeded} digitos.`)
+    if (
+      requiresChipByTipo &&
+      chipDigitsNeeded > 0 &&
+      !(chipIdMask ? isMaskComplete(trimmed, chipIdMask) : countFilledMaskChars(trimmed) >= chipDigitsNeeded)
+    ) {
+      setError(null)
+      setChipValidationError(chipIdMask ? `El ChipID debe completar la mascara ${chipIdMask}.` : `El ChipID debe completar ${chipDigitsNeeded} digitos.`)
       focusChipField()
       return false
     }
+
+    setChipValidationError(null)
 
     if (!needsSerie) {
       setChipUniquenessState('valid')
       if (isRetiredMaterial && !chipFromDatabase) {
+        setChipLockedAfterManualRetired(true)
+      }
+      focusCantidadField()
+      return true
+    }
+
+    if (isRetiredMaterial) {
+      const unique = await validateChipUniqueness(trimmed)
+      if (!unique) {
+        focusChipField()
+        return false
+      }
+      setChipUniquenessState('idle')
+      if (!chipFromDatabase) {
         setChipLockedAfterManualRetired(true)
       }
       focusCantidadField()
@@ -1099,9 +1502,25 @@ const OtRealizadaPage = () => {
 
     focusCantidadField()
     return true
-  }, [chipDigitsNeeded, chipId, chipIdMask, chipFromDatabase, isRetiredMaterial, needsChip, validateChipUniqueness])
+  }, [
+    allowManualChipId,
+    chipDigitsNeeded,
+    chipId,
+    chipIdMask,
+    chipFromDatabase,
+    isRetiredMaterial,
+    needsSerie,
+    requiresChipByTipo,
+    shouldSkipChipField,
+    validateChipUniqueness,
+  ])
 
   const handleChipBlur = (): void => {
+    if (skipMaterialBlurValidationRef.current) {
+      skipMaterialBlurValidationRef.current = false
+      setChipValidationError(null)
+      return
+    }
     void advanceFromChip()
   }
 
@@ -1150,6 +1569,12 @@ const OtRealizadaPage = () => {
   }, [serie])
 
   useEffect(() => {
+    if (chipValidationError) {
+      setChipValidationError(null)
+    }
+  }, [chipId, serie])
+
+  useEffect(() => {
     setProductoId('')
     setSerie('')
     setChipId('')
@@ -1161,7 +1586,9 @@ const OtRealizadaPage = () => {
     setChipFromDatabase(false)
     setChipLockedAfterManualRetired(false)
     setChipUniquenessState('idle')
+    setCantidadBlurConfirmada(false)
     setSerieValidationError(null)
+    setChipValidationError(null)
     lastValidatedSerieRef.current = null
     autoAdvanceToChipRef.current = false
   }, [tipoMaterialId])
@@ -1174,6 +1601,8 @@ const OtRealizadaPage = () => {
 
   useEffect(() => {
     setDetalleGuardado(false)
+    setCargoUsuarioGuardado(false)
+    nomencladoresAutocargaRef.current = false
   }, [numeroOrden])
 
   useEffect(() => {
@@ -1191,6 +1620,7 @@ const OtRealizadaPage = () => {
       setCantidad('1')
       setAllowManualChipId(false)
       setChipCamposBloqueados(true)
+      setCantidadBlurConfirmada(false)
       autoAdvanceToChipRef.current = false
       return
     }
@@ -1198,14 +1628,15 @@ const OtRealizadaPage = () => {
     setSerie('')
     setChipId('')
     setSerieCamposBloqueados(false)
-    setChipCamposBloqueados(!needsSerie && needsChip ? false : true)
+    setChipCamposBloqueados(!needsSerie && requiresChipByTipo ? false : true)
     setAllowManualChipId(false)
     setChipFromDatabase(false)
     setChipLockedAfterManualRetired(false)
     setChipUniquenessState('idle')
+    setCantidadBlurConfirmada(false)
     setCantidad('1')
     autoAdvanceToChipRef.current = false
-  }, [productoId, needsChip, needsSerie])
+  }, [productoId, requiresChipByTipo, needsSerie])
 
   useEffect(() => {
     if (!productoId && productoBloqueado) {
@@ -1222,7 +1653,7 @@ const OtRealizadaPage = () => {
         return
       }
 
-      if (needsChip && !shouldSkipChipField) {
+      if (requiresChipByTipo && !shouldSkipChipField) {
         chipIdInputRef.current?.focus()
         chipIdInputRef.current?.select()
         return
@@ -1231,15 +1662,15 @@ const OtRealizadaPage = () => {
       cantidadInputRef.current?.focus()
       cantidadInputRef.current?.select()
     })
-  }, [needsChip, needsSerie, productoId, shouldSkipChipField, tipoMaterialId])
+  }, [requiresChipByTipo, needsSerie, productoId, shouldSkipChipField, tipoMaterialId])
 
   useEffect(() => {
-    if (!isRetiredMaterial || !needsSerie || !needsChip) {
+    if (!isRetiredMaterial || !needsSerie || !requiresChipByTipo) {
       autoAdvanceToChipRef.current = false
       return
     }
 
-    if (!serie.trim() || !serieDigitsComplete) {
+    if (!serie.trim() || !serieDigitsComplete || !serieCamposBloqueados) {
       autoAdvanceToChipRef.current = false
       setChipCamposBloqueados(true)
       return
@@ -1267,7 +1698,7 @@ const OtRealizadaPage = () => {
       autoAdvanceToChipRef.current = true
       focusChipField()
     }
-  }, [chipCamposBloqueados, isRetiredMaterial, needsChip, needsSerie, serie, serieDigitsComplete, shouldSkipChipField])
+  }, [chipCamposBloqueados, isRetiredMaterial, requiresChipByTipo, needsSerie, serie, serieDigitsComplete, serieCamposBloqueados, shouldSkipChipField])
 
   useEffect(() => {
     const selected = tipoMaterialOptions.find((option) => option.value === tipoMaterialId)
@@ -1309,14 +1740,24 @@ const OtRealizadaPage = () => {
             type="button"
             variant="secondary"
             disabled={formLocked}
-            onClick={() => setMaterialRows((prev) => prev.filter((item) => item.id !== row.id))}
+            onClick={() =>
+              setMaterialRows((prev) => {
+                const next = prev.filter((item) => item.id !== row.id)
+                return syncKitDecodificadorRows(next, {
+                  idProductoRecienAgregado: row.idProducto,
+                  idTipoMaterial: row.idTipoMaterial,
+                  tipoMaterialLabel: row.tipoMaterialLabel,
+                  entregado: row.entregado,
+                })
+              })
+            }
           >
             Quitar
           </Button>
         ),
       },
     ],
-    [formLocked]
+    [formLocked, kitDecodificadorProductoIds, productoLabelById]
   )
 
   const cargoUsuarioColumns = useMemo<Column<CargoUsuarioRow>[]>(
@@ -1353,13 +1794,107 @@ const OtRealizadaPage = () => {
     setChipId('')
     setCantidad('1')
     setEntregado(true)
+    setError(null)
+    setSuccess(null)
     setProductoBloqueado(false)
-    setSerieCamposBloqueados(false)
+    setSerieCamposBloqueados(true)
     setChipCamposBloqueados(true)
     setChipFromDatabase(false)
     setChipLockedAfterManualRetired(false)
     setChipUniquenessState('idle')
+    setCantidadBlurConfirmada(false)
     setSerieValidationError(null)
+    setChipValidationError(null)
+    skipMaterialBlurValidationRef.current = false
+  }
+
+  const syncKitDecodificadorRows = (
+    rows: MaterialRow[],
+    context: {
+      idProductoRecienAgregado: number
+      idTipoMaterial: number
+      tipoMaterialLabel: string
+      entregado: boolean
+    }
+  ): MaterialRow[] => {
+    const productoAgregado = context.idProductoRecienAgregado
+    const isKitProducto =
+      kitDecodificadorProductoIds.has(productoAgregado) &&
+      productoAgregado !== CONTROL_REMOTO_PRODUCT_ID &&
+      productoAgregado !== PILAS_PRODUCT_ID
+    if (!isKitProducto) {
+      return rows
+    }
+
+    const normalizedTipoMaterialId = normalizeTipoMaterialForKit(context.idTipoMaterial)
+    const normalizedTipoMaterialLabel =
+      normalizedTipoMaterialId === 2 ? 'Retirado' : context.tipoMaterialLabel
+    const matchContext = (row: MaterialRow): boolean =>
+      row.entregado === context.entregado &&
+      matchesTipoMaterialForKit(row.idTipoMaterial, normalizedTipoMaterialId)
+    const clearAutoProductosForContext = (current: MaterialRow[]): MaterialRow[] =>
+      current.filter((row) => {
+        const isAutoProducto = row.idProducto === CONTROL_REMOTO_PRODUCT_ID || row.idProducto === PILAS_PRODUCT_ID
+        if (!isAutoProducto) return true
+        return !matchContext(row)
+      })
+
+    const cantidadDecodificadores = rows.reduce((acc, row) => {
+      if (!matchContext(row)) return acc
+      if (!kitDecodificadorProductoIds.has(row.idProducto)) return acc
+      if (row.idProducto === CONTROL_REMOTO_PRODUCT_ID || row.idProducto === PILAS_PRODUCT_ID) return acc
+      return acc + row.cantidad
+    }, 0)
+
+    if (cantidadDecodificadores <= 0) {
+      return clearAutoProductosForContext(rows)
+    }
+
+    const upsertAutoProducto = (
+      current: MaterialRow[],
+      idProductoAuto: number,
+      cantidadAuto: number
+    ): MaterialRow[] => {
+      if (cantidadAuto <= 0) return current
+      const index = current.findIndex(
+        (row) =>
+          row.idProducto === idProductoAuto &&
+          matchesTipoMaterialForKit(row.idTipoMaterial, normalizedTipoMaterialId) &&
+          row.entregado === context.entregado
+      )
+
+      if (index === -1) {
+        return [
+          ...current,
+          {
+            id: `kit-${idProductoAuto}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            idProducto: idProductoAuto,
+            producto: productoLabelById.get(idProductoAuto) ?? String(idProductoAuto),
+            serie: '',
+            chipId: '',
+            cantidad: cantidadAuto,
+            idTipoMaterial: normalizedTipoMaterialId,
+            tipoMaterialLabel: normalizedTipoMaterialLabel,
+            entregado: context.entregado,
+            requiresChip: false,
+          },
+        ]
+      }
+
+      return current.map((row, rowIndex) =>
+        rowIndex !== index
+          ? row
+          : {
+              ...row,
+              cantidad: cantidadAuto,
+            }
+      )
+    }
+
+    let next = clearAutoProductosForContext(rows)
+    next = upsertAutoProducto(next, CONTROL_REMOTO_PRODUCT_ID, cantidadDecodificadores)
+    next = upsertAutoProducto(next, PILAS_PRODUCT_ID, cantidadDecodificadores * 2)
+    return next
   }
 
   const addMaterial = async () => {
@@ -1367,6 +1902,7 @@ const OtRealizadaPage = () => {
     try {
       setSuccess(null)
       setError(null)
+      setChipValidationError(null)
       const cantidadNum = needsSerie ? 1 : Number(cantidad)
       const parsedProducto = Number(productoId)
       const parsedTipoMaterial = Number(tipoMaterialId)
@@ -1378,34 +1914,71 @@ const OtRealizadaPage = () => {
         setError('La cantidad debe ser mayor a 0.')
         return
       }
+      if (!needsSerie && !cantidadPermiteDecimales && !Number.isInteger(cantidadNum)) {
+        setError('Cantidad: el producto no permite decimales.')
+        return
+      }
       if (needsSerie) {
         setCantidad('1')
       }
       const serieTrim = serie.trim()
       const chipTrim = chipId.trim()
+      if (needsSerie && !seriePermiteEspacios && /\s/.test(serie)) {
+        setError('Serie con espacios no permitidos.')
+        return
+      }
+      if (requiresChipByTipo && !shouldSkipChipField && !chipPermiteEspacios && /\s/.test(chipId)) {
+        setError(null)
+        setChipValidationError('ChipID con espacios no permitidos.')
+        return
+      }
       if (needsSerie && serieMask && !isMaskComplete(serieTrim, serieMask)) {
         setError(`La serie debe completar la mascara ${serieMask}.`)
         return
       }
-      if (needsChip && chipIdMask && !isMaskComplete(chipTrim, chipIdMask)) {
-        setError(`El ChipID debe completar la mascara ${chipIdMask}.`)
+      if (requiresChipByTipo && !shouldSkipChipField && chipIdMask && !isMaskComplete(chipTrim, chipIdMask)) {
+        setError(null)
+        setChipValidationError(`El ChipID debe completar la mascara ${chipIdMask}.`)
         return
       }
       if (needsSerie && !serieTrim) {
         setError('Debes ingresar la Serie del producto.')
         return
       }
-      if (isRetiredMaterial && needsChip && !chipTrim) {
-        setError('Debes ingresar el ChipID del producto retirado.')
+      if (isRetiredMaterial && requiresChipByTipo && !shouldSkipChipField && !chipTrim) {
+        setError(null)
+        setChipValidationError('Debes ingresar el ChipID del producto retirado.')
         return
       }
-      if (!needsChip && chipTrim) {
-        setError('Este producto no maneja ChipID.')
+      if (!requiresChipByTipo && !allowManualChipId && chipTrim) {
+        setError(null)
+        setChipValidationError('Este producto no maneja ChipID.')
         return
+      }
+      if (serieTrim && !isRetiredMaterial) {
+        try {
+          const estadoSerie = await validarEstadoSerieRegistroOt({
+            serie: serieTrim,
+            chipId: chipTrim,
+            idProducto: parsedProducto,
+            idTipoMaterial: parsedTipoMaterial,
+            idRuta: idRutaValidacion ?? undefined,
+          })
+          if (!estadoSerie.sePuede) {
+            if (!isRetiredMaterial) {
+              setError(`${serieTrim} - ${estadoSerie.observacion?.trim() || 'Verificar ChipID.'}`)
+              return
+            }
+          }
+        } catch (validationError) {
+          console.error('No se pudo validar estado de serie/chip antes de agregar.', validationError)
+          setError('No se pudo validar el estado de Serie/ChipID. Intenta nuevamente.')
+          return
+        }
       }
       const serieValidated = await ensureSerieValidated()
       if (!serieValidated) return
-      if ((needsSerie || needsChip || allowManualChipId) && chipTrim) {
+      if ((needsSerie || requiresChipByTipo || allowManualChipId) && chipTrim) {
         const chipUnique = await validateChipUniqueness(chipTrim)
         if (!chipUnique) return
       }
@@ -1420,20 +1993,29 @@ const OtRealizadaPage = () => {
       }
       const productoLabel = productoOptions.find((option) => option.value === productoId)?.label ?? productoId
       const tipoMaterialLabel = tipoMaterialOptions.find((option) => option.value === tipoMaterialId)?.label ?? tipoMaterialId
-      setMaterialRows((prev) => [
-        ...prev,
-        {
-          id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
-          idProducto: parsedProducto,
-          producto: productoLabel,
-          serie: serieTrim,
-          chipId: chipTrim,
-          cantidad: cantidadNum,
+      setMaterialRows((prev) => {
+        const next = [
+          ...prev,
+          {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            idProducto: parsedProducto,
+            producto: productoLabel,
+            serie: serieTrim,
+            chipId: chipTrim,
+            cantidad: cantidadNum,
+            idTipoMaterial: parsedTipoMaterial,
+            tipoMaterialLabel,
+            entregado,
+            requiresChip: requiresChipByTipo && !shouldSkipChipField,
+          },
+        ]
+        return syncKitDecodificadorRows(next, {
+          idProductoRecienAgregado: parsedProducto,
           idTipoMaterial: parsedTipoMaterial,
           tipoMaterialLabel,
           entregado,
-        },
-      ])
+        })
+      })
       resetMaterialForm()
     } finally {
       setIsAddingMaterial(false)
@@ -1773,10 +2355,19 @@ const OtRealizadaPage = () => {
     setCargoUsuarioSerieBloqueada(false)
     if (!checked) {
       setCargoUsuarioSerie('')
+      if (cargoUsuarioNeedsChip) {
+        setCargoUsuarioTieneChipId(false)
+        setCargoUsuarioChipId('')
+        setCargoUsuarioChipError(null)
+        setCargoUsuarioChipBloqueado(false)
+      }
     }
   }
 
   const handleCargoUsuarioChipToggle = (checked: boolean) => {
+    if (!cargoUsuarioChipGateBySerie) {
+      return
+    }
     setCargoUsuarioGuardado(false)
     setCargoUsuarioTieneChipId(checked)
     setCargoUsuarioChipError(null)
@@ -1797,7 +2388,12 @@ const OtRealizadaPage = () => {
     setCargoUsuarioSerieError(null)
     setCargoUsuarioSerieBloqueada(false)
     cargoUsuarioChipAutoRef.current = false
-    if (cargoUsuarioActiveChip) {
+    if (cargoUsuarioNeedsSerie && cargoUsuarioNeedsChip) {
+      setCargoUsuarioTieneChipId(false)
+      setCargoUsuarioChipId('')
+      setCargoUsuarioChipError(null)
+      setCargoUsuarioChipBloqueado(false)
+    } else if (cargoUsuarioActiveChip) {
       setCargoUsuarioChipBloqueado(false)
     }
   }
@@ -1827,6 +2423,12 @@ const OtRealizadaPage = () => {
     if (!trimmed) {
       setCargoUsuarioSerieError('Debes ingresar la Serie.')
       setCargoUsuarioSerieBloqueada(false)
+      if (cargoUsuarioNeedsChip) {
+        setCargoUsuarioTieneChipId(false)
+        setCargoUsuarioChipId('')
+        setCargoUsuarioChipError(null)
+        setCargoUsuarioChipBloqueado(false)
+      }
       cargoUsuarioSerieRef.current?.focus()
       cargoUsuarioSerieRef.current?.select()
       return false
@@ -1839,6 +2441,12 @@ const OtRealizadaPage = () => {
           : `La serie debe completar ${cargoUsuarioSerieDigitsNeeded} digitos.`
       )
       setCargoUsuarioSerieBloqueada(false)
+      if (cargoUsuarioNeedsChip) {
+        setCargoUsuarioTieneChipId(false)
+        setCargoUsuarioChipId('')
+        setCargoUsuarioChipError(null)
+        setCargoUsuarioChipBloqueado(false)
+      }
       cargoUsuarioSerieRef.current?.focus()
       cargoUsuarioSerieRef.current?.select()
       return false
@@ -1879,6 +2487,10 @@ const OtRealizadaPage = () => {
         console.warn('No se pudo buscar chipId de cargo usuario por serie.', error)
         setCargoUsuarioSerieError('No se pudo validar la serie para cargo usuario. Intenta nuevamente.')
         setCargoUsuarioSerieBloqueada(false)
+        setCargoUsuarioTieneChipId(false)
+        setCargoUsuarioChipId('')
+        setCargoUsuarioChipError(null)
+        setCargoUsuarioChipBloqueado(false)
         cargoUsuarioSerieRef.current?.focus()
         cargoUsuarioSerieRef.current?.select()
         return false
@@ -1896,6 +2508,12 @@ const OtRealizadaPage = () => {
       if (!estadoSerie.permitido) {
         setCargoUsuarioSerieError(estadoSerie.observacion?.trim() || 'El producto tiene un estado no permitido para cargo usuario.')
         setCargoUsuarioSerieBloqueada(false)
+        if (cargoUsuarioNeedsChip) {
+          setCargoUsuarioTieneChipId(false)
+          setCargoUsuarioChipId('')
+          setCargoUsuarioChipError(null)
+          setCargoUsuarioChipBloqueado(false)
+        }
         cargoUsuarioSerieRef.current?.focus()
         cargoUsuarioSerieRef.current?.select()
         return false
@@ -1904,6 +2522,12 @@ const OtRealizadaPage = () => {
       console.warn('No se pudo validar estado permitido por proc en cargo usuario.', validationError)
       setCargoUsuarioSerieError('No se pudo validar la serie para cargo usuario. Intenta nuevamente.')
       setCargoUsuarioSerieBloqueada(false)
+      if (cargoUsuarioNeedsChip) {
+        setCargoUsuarioTieneChipId(false)
+        setCargoUsuarioChipId('')
+        setCargoUsuarioChipError(null)
+        setCargoUsuarioChipBloqueado(false)
+      }
       cargoUsuarioSerieRef.current?.focus()
       cargoUsuarioSerieRef.current?.select()
       return false
@@ -1923,6 +2547,22 @@ const OtRealizadaPage = () => {
     cargoUsuarioSerieMask,
     cargoUsuarioTieneSerie,
     validarCargoUsuarioEstadoPermitido,
+  ])
+
+  useEffect(() => {
+    if (cargoUsuarioChipGateBySerie) return
+    if (!cargoUsuarioTieneChipId && !cargoUsuarioChipId && !cargoUsuarioChipError && !cargoUsuarioChipBloqueado) return
+    setCargoUsuarioTieneChipId(false)
+    setCargoUsuarioChipId('')
+    setCargoUsuarioChipError(null)
+    setCargoUsuarioChipBloqueado(false)
+    cargoUsuarioChipAutoRef.current = false
+  }, [
+    cargoUsuarioChipBloqueado,
+    cargoUsuarioChipError,
+    cargoUsuarioChipGateBySerie,
+    cargoUsuarioChipId,
+    cargoUsuarioTieneChipId,
   ])
 
   const advanceCargoUsuarioFromChip = useCallback(async (): Promise<boolean> => {
@@ -2041,7 +2681,9 @@ const OtRealizadaPage = () => {
     const serieTrim = cargoUsuarioSerie.trim()
     const chipTrim = cargoUsuarioChipId.trim()
     const cantidadNum = Number(cargoUsuarioCantidad)
-    const existeHabilitado = cargoUsuarioNeedsSerie
+    const productoRequiereIdentificacion =
+      Boolean(cargoUsuarioSelectedMeta?.esSerializado) || cargoUsuarioNeedsSerie || cargoUsuarioNeedsChip
+    const existeHabilitado = productoRequiereIdentificacion
     const activeSerie = cargoUsuarioActiveSerie
     const activeChip = cargoUsuarioActiveChip
     const serieLista = activeSerie && Boolean(serieTrim) && cargoUsuarioSerieDigitsComplete
@@ -2049,7 +2691,7 @@ const OtRealizadaPage = () => {
     const seriePayload = serieLista ? serieTrim : ''
     const chipPayload = chipLista ? chipTrim : ''
 
-    if (!cargoUsuarioNeedsSerie) {
+    if (!productoRequiereIdentificacion) {
       if (!cargoUsuarioCantidadValid) {
         setCargoUsuarioError('La cantidad debe ser mayor a 0.')
         return
@@ -2106,26 +2748,28 @@ const OtRealizadaPage = () => {
       return
     }
 
-    try {
-      const estado = await validarCargoUsuarioEstadoPermitido(seriePayload, chipPayload)
-      if (!estado.permitido) {
-        const message = estado.observacion?.trim() || 'El producto tiene un estado no permitido para cargo usuario.'
-        setCargoUsuarioError(message)
-        if (seriePayload) {
-          setCargoUsuarioSerieError(message)
-          cargoUsuarioSerieRef.current?.focus()
-          cargoUsuarioSerieRef.current?.select()
-        } else if (chipPayload) {
-          setCargoUsuarioChipError(message)
-          cargoUsuarioChipRef.current?.focus()
-          cargoUsuarioChipRef.current?.select()
+    if (seriePayload || chipPayload) {
+      try {
+        const estado = await validarCargoUsuarioEstadoPermitido(seriePayload, chipPayload)
+        if (!estado.permitido) {
+          const message = estado.observacion?.trim() || 'El producto tiene un estado no permitido para cargo usuario.'
+          setCargoUsuarioError(message)
+          if (seriePayload) {
+            setCargoUsuarioSerieError(message)
+            cargoUsuarioSerieRef.current?.focus()
+            cargoUsuarioSerieRef.current?.select()
+          } else if (chipPayload) {
+            setCargoUsuarioChipError(message)
+            cargoUsuarioChipRef.current?.focus()
+            cargoUsuarioChipRef.current?.select()
+          }
+          return
         }
+      } catch (validationError) {
+        console.warn('No se pudo validar estado permitido en cargo usuario.', validationError)
+        setCargoUsuarioError('No se pudo validar el estado del producto de cargo usuario. Intenta nuevamente.')
         return
       }
-    } catch (validationError) {
-      console.warn('No se pudo validar estado permitido en cargo usuario.', validationError)
-      setCargoUsuarioError('No se pudo validar el estado del producto de cargo usuario. Intenta nuevamente.')
-      return
     }
 
     const productoLabel = cargoUsuarioProductoOptions.find((option) => option.value === cargoUsuarioProductoId)?.label ?? cargoUsuarioProductoId
@@ -2178,10 +2822,10 @@ const OtRealizadaPage = () => {
   }, [])
 
   const collectSaldoRutaPreview = useCallback(async (): Promise<SaldoPreviewRow[]> => {
-    if (!idRuta || idRuta <= 0) {
+    if (!idRutaValidacion || idRutaValidacion <= 0) {
       return []
     }
-      const saldoRows = await fetchSaldoRuta({ idRuta, fecha: fechaTrabajo, idSucursal: sessionIdSucursal ?? undefined })
+      const saldoRows = await fetchSaldoRuta({ idRuta: idRutaValidacion, fecha: fechaTrabajo, idSucursal: sessionIdSucursal ?? undefined })
     const saldoMap = new Map<number, number>()
 
     saldoRows.forEach((row) => {
@@ -2194,6 +2838,8 @@ const OtRealizadaPage = () => {
 
     const requestedByProduct = new Map<number, { producto: string; cantidad: number }>()
     materialRows.forEach((row) => {
+      // En legado solo se valida saldo para materiales instalados.
+      if (isRetiredMaterialRow(row)) return
       const current = requestedByProduct.get(row.idProducto)
       if (current) {
         current.cantidad += row.cantidad
@@ -2218,7 +2864,7 @@ const OtRealizadaPage = () => {
         }
       })
       .sort((a, b) => a.saldo - b.saldo || a.producto.localeCompare(b.producto))
-  }, [fechaTrabajo, idRuta, materialRows, sessionIdSucursal])
+  }, [fechaTrabajo, idRutaValidacion, materialRows, sessionIdSucursal])
 
   const validateSaldoRutaDisponible = useCallback(async (): Promise<boolean> => {
     try {
@@ -2263,7 +2909,7 @@ const OtRealizadaPage = () => {
   }, [collectSaldoRutaPreview, showSaldoPopup])
 
   const runPrevalidations = async (): Promise<boolean> => {
-    if (!idRuta || idRuta <= 0) {
+    if (!idRutaValidacion || idRutaValidacion <= 0) {
       setError('No se pudo resolver la ruta para validar cierre y cuadre.')
       return false
     }
@@ -2271,7 +2917,7 @@ const OtRealizadaPage = () => {
     try {
       const [cierreAgenda, hasCuadreRuta] = await Promise.all([
         validateExisteCierreAlmacen({ fecha: fechaTrabajo }),
-        validateCuadreRuta({ idRuta, fecha: fechaTrabajo }),
+        validateCuadreRuta({ idRuta: idRutaValidacion, fecha: fechaTrabajo }),
       ])
       if (cierreAgenda.bloqueado) {
         setError(cierreAgenda.mensaje || 'No se puede registrar el detalle porque existe cierre de almacen.')
@@ -2298,59 +2944,47 @@ const OtRealizadaPage = () => {
 
   const prevalidateMaterialRowsBeforeSubmit = useCallback(async (): Promise<boolean> => {
     if (materialRows.length === 0) return true
+    retiredRowsWithoutSaldoPairRef.current.clear()
 
     for (let index = 0; index < materialRows.length; index += 1) {
       const row = materialRows[index]
       const serieTrim = row.serie.trim()
       const chipTrim = row.chipId.trim()
       const rowLabel = `Fila ${index + 1} (${row.producto || `Producto ${row.idProducto}`})`
+      const rowIsRetired = isRetiredMaterialRow(row)
+
+      if (rowIsRetired) {
+        // En retirados mantenemos el comportamiento tolerante de WinForms:
+        // no bloquear por validacion previa de estado; el backend define si requiere ajuste,
+        // y ante 409 aplicamos fallback automatico en mutationFn.
+        continue
+      }
 
       if (serieTrim) {
         try {
-          const serieValidation = await validarSerieSaldo({
-            serie: serieTrim,
-            idProducto: row.idProducto,
-            idTipoMaterial: row.idTipoMaterial,
-            idRuta: idRuta ?? undefined,
-          })
-
-          if (!serieValidation.sePuede) {
-            setError(`${rowLabel}: ${serieValidation.observacion ?? 'La serie no esta disponible en saldo.'}`)
-            return false
-          }
-        } catch (validationError) {
-          console.error('No se pudo validar la serie de una fila antes de guardar.', validationError)
-          setError(`${rowLabel}: No se pudo validar la serie en saldo.`)
-          return false
-        }
-      }
-
-      if (serieTrim && chipTrim) {
-        try {
-          const comboValidation = await validarSerieChipUnico({
+          // Replica WinForms (frm_OrdenTrabajoRealizada.Validacion):
+          // validarEstadoSerieGuadar -> spx_VerificarEstadoSerie(...)
+          const estadoSerie = await validarEstadoSerieRegistroOt({
             serie: serieTrim,
             chipId: chipTrim,
+            idProducto: row.idProducto,
+            idTipoMaterial: row.idTipoMaterial,
+            idRuta: idRutaValidacion ?? undefined,
           })
-
-          if (comboValidation.chipExiste && !comboValidation.mismoRegistro) {
-            setError(`${rowLabel}: El ChipID ya esta registrado con otro serial.`)
-            return false
-          }
-
-          if (!comboValidation.sePuede) {
-            setError(`${rowLabel}: ${comboValidation.observacion?.trim() || 'La serie y el ChipID no existen en saldo.'}`)
+          if (!estadoSerie.sePuede) {
+            setError(`${serieTrim} - ${estadoSerie.observacion?.trim() || 'Verificar ChipID.'}`)
             return false
           }
         } catch (validationError) {
-          console.error('No se pudo validar la combinacion serie/chip de una fila antes de guardar.', validationError)
-          setError(`${rowLabel}: No se pudo validar la combinacion Serie + ChipID.`)
+          console.error('No se pudo validar estado de serie/chip de una fila antes de guardar.', validationError)
+          setError(`${rowLabel}: No se pudo validar estado de Serie/ChipID.`)
           return false
         }
       }
     }
 
     return true
-  }, [idRuta, materialRows, validarSerieChipUnico, validarSerieSaldo])
+  }, [idRutaValidacion, materialRows, validarEstadoSerieRegistroOt])
 
   const prevalidateCargoUsuarioRowsBeforeSubmit = useCallback(async (): Promise<boolean> => {
     if (cargoUsuarioRows.length === 0) return true
@@ -2369,8 +3003,13 @@ const OtRealizadaPage = () => {
       const serieTrim = row.serie.trim()
       const chipTrim = row.chipId.trim()
       const rowLabel = `Fila ${index + 1} (${row.producto || `Producto ${row.idProducto}`})`
+      const rowMeta = cargoUsuarioMetaByProductoId.get(row.idProducto)
+      const rowRequiereIdentificacion =
+        Boolean(rowMeta?.esSerializado) ||
+        (rowMeta?.digitosImei ?? 0) > 0 ||
+        (rowMeta?.digitosChipId ?? 0) > 0
 
-      if (!serieTrim && !chipTrim) {
+      if (rowRequiereIdentificacion && !serieTrim && !chipTrim) {
         setCargoUsuarioError(`${rowLabel}: Debes registrar Serie o ChipID.`)
         return false
       }
@@ -2392,28 +3031,30 @@ const OtRealizadaPage = () => {
         seenChip.add(chipKey)
       }
 
-      try {
-        // Validacion informativa contra backend: no bloquea si no existe.
-        await validarCargoUsuarioExistencia(serieTrim, chipTrim)
-      } catch (validationError) {
-        console.warn('No se pudo validar una fila de cargo usuario antes de guardar.', validationError)
-      }
+      if (serieTrim || chipTrim) {
+        try {
+          // Validacion informativa contra backend: no bloquea si no existe.
+          await validarCargoUsuarioExistencia(serieTrim, chipTrim)
+        } catch (validationError) {
+          console.warn('No se pudo validar una fila de cargo usuario antes de guardar.', validationError)
+        }
 
-      try {
-        const estado = await validarCargoUsuarioEstadoPermitido(serieTrim, chipTrim)
-        if (!estado.permitido) {
-          setCargoUsuarioError(`${rowLabel}: ${estado.observacion?.trim() || 'Estado no permitido para cargo usuario.'}`)
+        try {
+          const estado = await validarCargoUsuarioEstadoPermitido(serieTrim, chipTrim)
+          if (!estado.permitido) {
+            setCargoUsuarioError(`${rowLabel}: ${estado.observacion?.trim() || 'Estado no permitido para cargo usuario.'}`)
+            return false
+          }
+        } catch (validationError) {
+          console.warn('No se pudo validar estado permitido de una fila de cargo usuario.', validationError)
+          setCargoUsuarioError(`${rowLabel}: No se pudo validar el estado para cargo usuario.`)
           return false
         }
-      } catch (validationError) {
-        console.warn('No se pudo validar estado permitido de una fila de cargo usuario.', validationError)
-        setCargoUsuarioError(`${rowLabel}: No se pudo validar el estado para cargo usuario.`)
-        return false
       }
     }
 
     return true
-  }, [cargoUsuarioRows, materialRows, validarCargoUsuarioEstadoPermitido, validarCargoUsuarioExistencia])
+  }, [cargoUsuarioMetaByProductoId, cargoUsuarioRows, materialRows, validarCargoUsuarioEstadoPermitido, validarCargoUsuarioExistencia])
 
   const mutation = useMutation({
     mutationFn: async (payload: {
@@ -2427,6 +3068,7 @@ const OtRealizadaPage = () => {
         chipId: string
         cantidad: number
         entregado: boolean
+        requiresChip: boolean
       }[]
       cargoUsuarioItems: {
         idProducto: number
@@ -2436,13 +3078,112 @@ const OtRealizadaPage = () => {
         existe: string
       }[]
     }) => {
+      let idVentaFromDetalle: number | undefined
+      let numeroOrdenFromDetalle: number | undefined
       if (payload.materiales.length > 0) {
-        await createOtDetalle({
-          numeroOrden: payload.numeroOrden,
-          idEstado: payload.idEstado,
-          observacion: payload.observacion,
-          materiales: payload.materiales,
-        })
+        const sanitizeMaterialesForApi = (
+          rows: {
+            idProducto: number
+            idTipoMaterial: number
+            serie: string
+            chipId: string
+            cantidad: number
+            entregado: boolean
+            requiresChip: boolean
+          }[]
+        ) =>
+          rows.map(({ requiresChip: _requiresChip, ...apiRow }) => apiRow)
+        const buildRetryMateriales = (
+          mode: 'clear_chip' | 'clear_serie_chip',
+          scope: 'targeted' | 'all',
+          hintSerie?: string,
+          hintChip?: string
+        ) =>
+          payload.materiales.map((item) => {
+            const isRetiredRow = RETIRED_MATERIAL_IDS.has(item.idTipoMaterial) || item.entregado === false
+            if (!isRetiredRow) return item
+            const itemSerie = item.serie.trim().toLowerCase()
+            const itemChip = item.chipId.trim().toLowerCase()
+            const serieTarget = hintSerie?.trim().toLowerCase()
+            const chipTarget = hintChip?.trim().toLowerCase()
+            const isTargeted =
+              scope === 'all' ||
+              (serieTarget ? itemSerie === serieTarget : false) ||
+              (chipTarget ? itemChip === chipTarget : false)
+            if (!isTargeted) return item
+            if (mode === 'clear_chip') {
+              if (item.requiresChip) return item
+              if (!item.serie.trim() || !item.chipId.trim()) return item
+              return { ...item, chipId: '' }
+            }
+            if (item.requiresChip) return item
+            if (!item.serie.trim() && !item.chipId.trim()) return item
+            return { ...item, serie: '', chipId: '' }
+          })
+        const shouldRetryWithoutChip = (error: unknown) => {
+          if (!axios.isAxiosError(error)) return false
+          if (error.response?.status !== 409) return false
+          const message = readValidationMessageFromError(error)
+          return shouldAllowRetiredValidationFailure(message)
+        }
+        const runRetry = async (
+          mode: 'clear_chip' | 'clear_serie_chip',
+          scope: 'targeted' | 'all',
+          sourceError: unknown
+        ): Promise<{ idVenta?: number; numeroOrden?: number } | null> => {
+          const message = readValidationMessageFromError(sourceError)
+          const hintSerie = extractSerieFromMessage(message)
+          const hintChip = extractChipFromMessage(message)
+          const retryMateriales = buildRetryMateriales(mode, scope, hintSerie, hintChip)
+          const shouldRetry = retryMateriales.some(
+            (row, idx) => row.chipId !== payload.materiales[idx].chipId || row.serie !== payload.materiales[idx].serie
+          )
+          if (!shouldRetry) return null
+          return createOtDetalle({
+            numeroOrden: payload.numeroOrden,
+            idEstado: payload.idEstado,
+            observacion: payload.observacion,
+            materiales: sanitizeMaterialesForApi(retryMateriales),
+          })
+        }
+        try {
+          const detalleResult = await createOtDetalle({
+            numeroOrden: payload.numeroOrden,
+            idEstado: payload.idEstado,
+            observacion: payload.observacion,
+            materiales: sanitizeMaterialesForApi(payload.materiales),
+          })
+          idVentaFromDetalle = detalleResult.idVenta
+          numeroOrdenFromDetalle = detalleResult.numeroOrden
+        } catch (error) {
+          if (!shouldRetryWithoutChip(error)) throw error
+
+          const retryTargets: Array<{ mode: 'clear_chip' | 'clear_serie_chip'; scope: 'targeted' | 'all' }> = [
+            { mode: 'clear_chip', scope: 'targeted' },
+            { mode: 'clear_serie_chip', scope: 'targeted' },
+            { mode: 'clear_chip', scope: 'all' },
+            { mode: 'clear_serie_chip', scope: 'all' },
+          ]
+
+          let lastError: unknown = error
+          let detalleResult: { idVenta?: number; numeroOrden?: number } | null = null
+          for (const retry of retryTargets) {
+            try {
+              const result = await runRetry(retry.mode, retry.scope, lastError)
+              if (!result) continue
+              detalleResult = result
+              break
+            } catch (retryError) {
+              if (!shouldRetryWithoutChip(retryError)) throw retryError
+              lastError = retryError
+            }
+          }
+
+          if (!detalleResult) throw lastError
+
+          idVentaFromDetalle = detalleResult.idVenta
+          numeroOrdenFromDetalle = detalleResult.numeroOrden
+        }
       } else {
         await createOtRealizada({
           numeroOrden: payload.numeroOrden,
@@ -2458,23 +3199,50 @@ const OtRealizadaPage = () => {
         })
       }
 
+      if (idVentaFromDetalle) {
+        return {
+          idVenta: idVentaFromDetalle,
+          numeroOrden: numeroOrdenFromDetalle ?? Number(payload.numeroOrden),
+        }
+      }
+
       const venta = await fetchOtByNumero(payload.numeroOrden)
-      const idVenta = readNumber(venta, ['idVenta', 'Id_Venta', 'id_venta', 'id', 'Id']) ?? undefined
-      return { idVenta, numeroOrden: Number(payload.numeroOrden) }
+      const idVenta =
+        readNumber(venta, [
+          'idVenta',
+          'IdVenta',
+          'Id_Venta',
+          'id_venta',
+          'idCodigoVenta',
+          'IdCodigoVenta',
+          'id_codigoventa',
+          'Id_CodigoVenta',
+          'id',
+          'Id',
+        ]) ?? undefined
+      const numeroOrdenResolved =
+        readNumber(venta, ['numeroOrden', 'NumeroOrden', 'ordenTrabajo', 'OrdenTrabajo', 'ot', 'OT']) ?? Number(payload.numeroOrden)
+      return { idVenta, numeroOrden: numeroOrdenResolved }
     },
     onSuccess: (data) => {
       setError(null)
       setCargoUsuarioError(null)
       setCargoUsuarioSuccess(null)
-      setSuccess(`Detalle registrado correctamente. IdVenta: ${data.idVenta ?? '-'} | OT: ${data.numeroOrden ?? numeroOrden}`)
       setDetalleGuardado(true)
+      setCargoUsuarioGuardado(true)
       setMaterialRows([])
       setCargoUsuarioRows([])
       resetMaterialForm()
       resetCargoUsuarioForm()
+      const message = `Registro exitoso. NroTrans.: ${data.idVenta ?? '-'} | OT: ${data.numeroOrden ?? numeroOrden}`
+      setSuccess(message)
+      setSuccessModalMessage(message)
+      setSuccessModalOpen(true)
     },
     onError: (err, variables) => {
       setSuccess(null)
+      setSuccessModalOpen(false)
+      setSuccessModalMessage('')
       const backendMessage = axios.isAxiosError(err) ? err.response?.data?.message ?? 'No se pudo guardar el detalle.' : 'No se pudo guardar el detalle.'
       const onlyCargoUsuarioPayload = variables.materiales.length === 0 && variables.cargoUsuarioItems.length > 0
       if (onlyCargoUsuarioPayload) {
@@ -2488,6 +3256,8 @@ const OtRealizadaPage = () => {
       setError(backendMessage)
     },
   })
+
+  const formInteractionLocked = formLocked || mutation.isPending || isPrevalidating
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
@@ -2522,9 +3292,10 @@ const OtRealizadaPage = () => {
         idProducto: row.idProducto,
         idTipoMaterial: row.idTipoMaterial,
         serie: row.serie,
-        chipId: row.chipId,
+        chipId: retiredRowsWithoutSaldoPairRef.current.has(row.id) ? '' : row.chipId,
         cantidad: row.cantidad,
         entregado: row.entregado,
+        requiresChip: row.requiresChip,
       })),
       cargoUsuarioItems: cargoUsuarioRows.map((row) => ({
         idProducto: row.idProducto,
@@ -2573,11 +3344,14 @@ const OtRealizadaPage = () => {
             { id: 'cargo-usuario', label: 'Cargo Usuario' },
           ]}
           activeId={activeTab}
-          onChange={(id) => setActiveTab(id as 'materiales' | 'cargo-usuario')}
+          onChange={(id) => {
+            if (formInteractionLocked) return
+            setActiveTab(id as 'materiales' | 'cargo-usuario')
+          }}
         />
 
         {activeTab === 'materiales' ? (
-          <fieldset disabled={formLocked} className="m-0 min-w-0 border-0 p-0">
+          <fieldset disabled={formInteractionLocked} className="m-0 min-w-0 border-0 p-0">
             <FormCard title="Materiales" description="Carga de productos usados en la OT.">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
               <div className="min-w-0 md:col-span-1 xl:col-span-1">
@@ -2629,20 +3403,21 @@ const OtRealizadaPage = () => {
                     onChange={(event) => {
                       const nextValue = needsSerie ? applyMask(event.target.value, serieMask) : event.target.value
                       setSerie(nextValue)
+                      setCantidadBlurConfirmada(false)
                       setChipUniquenessState('idle')
-                      if (isRetiredMaterial && needsChip) {
+                      if (isRetiredMaterial && requiresChipByTipo) {
                         setChipId('')
                         setChipCamposBloqueados(true)
                         autoAdvanceToChipRef.current = false
                       }
                     }}
                     placeholder={needsSerie && serieMask ? serieMask : undefined}
-                    disabled={serieDisabled}
+                    disabled={materialFormCleared || serieDisabled}
                   />
                 </Field>
               </div>
               <div className="min-w-0 md:col-span-1 xl:col-span-1">
-                <Field label="ChipID">
+                <Field label="ChipID" error={chipValidationError ?? undefined}>
                   <input
                     ref={chipIdInputRef}
                     className={`input-base ${chipDisabled ? 'bg-slate-50 text-slate-400' : ''}`}
@@ -2651,10 +3426,11 @@ const OtRealizadaPage = () => {
                     onKeyDown={handleChipKeyDown}
                     onBlur={handleChipBlur}
                     onChange={(event) => {
-                      setChipId(needsChip ? applyMask(event.target.value, chipIdMask) : event.target.value)
+                      setChipId(requiresChipByTipo ? applyMask(event.target.value, chipIdMask) : event.target.value)
+                      setCantidadBlurConfirmada(false)
                       setChipUniquenessState('idle')
                     }}
-                    placeholder={needsChip && chipIdMask ? chipIdMask : undefined}
+                    placeholder={requiresChipByTipo && chipIdMask ? chipIdMask : undefined}
                     disabled={chipDisabled}
                   />
                 </Field>
@@ -2666,10 +3442,13 @@ const OtRealizadaPage = () => {
                     className={`input-base text-right ${!productoId || needsSerie ? 'bg-slate-50 text-slate-400' : ''}`}
                     type="number"
                     min="0"
-                    step="0.01"
+                    step={cantidadPermiteDecimales ? '0.01' : '1'}
                     value={needsSerie ? '1' : cantidad}
                     onFocus={handleCantidadFocus}
+                    onKeyDown={handleCantidadKeyDown}
+                    onBlur={handleCantidadBlur}
                     onChange={(event) => {
+                      setCantidadBlurConfirmada(false)
                       if (needsSerie) {
                         setCantidad('1')
                         return
@@ -2677,15 +3456,24 @@ const OtRealizadaPage = () => {
                       setCantidad(event.target.value)
                     }}
                     readOnly={needsSerie}
-                    disabled={!productoId}
+                    disabled={materialFormCleared || !productoId}
                   />
                 </Field>
               </div>
               <div className="flex w-full flex-col gap-2 md:col-span-2 md:flex-row md:justify-end xl:col-span-6">
-                <Button className="w-full md:w-auto" type="button" onClick={addMaterial} disabled={!canAddMaterial}>
+                <Button className="w-full md:w-auto" type="button" onClick={addMaterial} disabled={formInteractionLocked || !canAddMaterial}>
                   Agregar
                 </Button>
-                <Button className="w-full md:w-auto" type="button" variant="secondary" onClick={resetMaterialForm}>
+                <Button
+                  className="w-full md:w-auto"
+                  type="button"
+                  variant="secondary"
+                  disabled={formInteractionLocked}
+                  onMouseDown={() => {
+                    skipMaterialBlurValidationRef.current = true
+                  }}
+                  onClick={resetMaterialForm}
+                >
                   Limpiar
                 </Button>
               </div>
@@ -2696,7 +3484,7 @@ const OtRealizadaPage = () => {
             </FormCard>
           </fieldset>
         ) : (
-          <fieldset disabled={formLocked} className="m-0 min-w-0 border-0 p-0">
+          <fieldset disabled={formInteractionLocked} className="m-0 min-w-0 border-0 p-0">
             <FormCard title="Cargo Usuario" description="Carga de productos de cargo usuario.">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
               <div className="min-w-0 md:col-span-2 xl:col-span-6">
@@ -2762,7 +3550,7 @@ const OtRealizadaPage = () => {
                             type="checkbox"
                             checked={cargoUsuarioTieneChipId}
                             onChange={(event) => handleCargoUsuarioChipToggle(event.target.checked)}
-                            disabled={!cargoUsuarioProductoId || cargoUsuarioChipBloqueado}
+                            disabled={!cargoUsuarioProductoId || !cargoUsuarioChipGateBySerie || cargoUsuarioChipBloqueado}
                           />
                           ChipID
                         </label>
@@ -2777,7 +3565,7 @@ const OtRealizadaPage = () => {
                           onBlur={handleCargoUsuarioChipBlur}
                           placeholder={cargoUsuarioNeedsChip && cargoUsuarioChipMask ? cargoUsuarioChipMask : undefined}
                           readOnly={cargoUsuarioChipBloqueado}
-                          disabled={!cargoUsuarioProductoId || !cargoUsuarioTieneChipId || cargoUsuarioChipBloqueado}
+                          disabled={!cargoUsuarioProductoId || !cargoUsuarioChipGateBySerie || !cargoUsuarioTieneChipId || cargoUsuarioChipBloqueado}
                         />
                         {cargoUsuarioChipError ? (
                           <span className="text-xs font-semibold text-rose-600">{cargoUsuarioChipError}</span>
@@ -2828,10 +3616,10 @@ const OtRealizadaPage = () => {
                 </div>
               )}
               <div className="flex w-full flex-col gap-2 md:col-span-2 md:flex-row md:justify-end xl:col-span-6">
-                <Button className="w-full md:w-auto" type="button" onClick={addCargoUsuario} disabled={!cargoUsuarioCanAdd}>
+                <Button className="w-full md:w-auto" type="button" onClick={addCargoUsuario} disabled={formInteractionLocked || !cargoUsuarioCanAdd}>
                   Agregar
                 </Button>
-                <Button className="w-full md:w-auto" type="button" variant="secondary" onClick={resetCargoUsuarioForm}>
+                <Button className="w-full md:w-auto" type="button" variant="secondary" onClick={resetCargoUsuarioForm} disabled={formInteractionLocked}>
                   Limpiar
                 </Button>
               </div>
@@ -2879,7 +3667,7 @@ const OtRealizadaPage = () => {
         {success ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-600">{success}</div> : null}
 
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={() => navigate(-1)} disabled={mutation.isPending || isPrevalidating}>
+          <Button className="w-full sm:w-auto" type="button" variant="secondary" onClick={handleBackToDashboard} disabled={mutation.isPending || isPrevalidating}>
             Volver
           </Button>
           <Button
@@ -2898,9 +3686,21 @@ const OtRealizadaPage = () => {
           </Button>
         </div>
       </form>
+
+      <Modal
+        open={successModalOpen}
+        title="Registro exitoso"
+        onClose={handleSuccessModalAccept}
+        actions={
+          <Button type="button" onClick={handleSuccessModalAccept}>
+            Aceptar
+          </Button>
+        }
+      >
+        <p>{successModalMessage || success || 'Registro exitoso.'}</p>
+      </Modal>
     </div>
   )
 }
 
 export default OtRealizadaPage
-

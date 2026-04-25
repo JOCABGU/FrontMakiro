@@ -579,6 +579,14 @@ export const fetchConformacionSupervisores = async (sucursal?: string): Promise<
   return normalizeArrayResponse<CatalogItem>(data)
 }
 
+export const fetchConformacionSalesforce = async (sucursal?: string): Promise<CatalogItem[]> => {
+  const data = await requestConformacionCatalogGet<unknown>(
+    '/salesforce',
+    sanitizeParams({ sucursal: normalizeStringParam(sucursal) })
+  )
+  return normalizeArrayResponse<CatalogItem>(data)
+}
+
 export const fetchConformacionActividades = async (sucursal?: string): Promise<CatalogItem[]> => {
   const data = await requestConformacionCatalogGet<unknown>(
     '/actividades',
@@ -712,4 +720,3 @@ export const guardarRelacionCuadrilla = async (payload: ConformacionCuadrillaRel
     body: relationPayload,
   })
 }
-

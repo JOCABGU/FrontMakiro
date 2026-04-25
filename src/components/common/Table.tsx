@@ -13,6 +13,7 @@ interface TableProps<T> {
   emptyLabel?: string
   rowClassName?: string
   variant?: 'default' | 'row-block'
+  hideHeader?: boolean
   desktopMinWidthClass?: string
   mobileShowHeaders?: boolean
   mobileRowBlockMode?: 'table' | 'cards'
@@ -27,6 +28,7 @@ const Table = <T,>({
   emptyLabel = 'Sin registros',
   rowClassName = '',
   variant = 'default',
+  hideHeader = false,
   desktopMinWidthClass = 'min-w-full',
   mobileShowHeaders = true,
   mobileRowBlockMode = 'table',
@@ -51,15 +53,17 @@ const Table = <T,>({
         ) : isRowBlock && mobileRowBlockMode === 'table' ? (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] border-collapse text-xs">
-              <thead className="bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
-                <tr>
-                  {columns.map((column) => (
-                    <th key={column.key} className={`border-b border-slate-200 px-3 py-2 text-left ${column.className ?? ''}`}>
-                      {column.header}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
+              {!hideHeader ? (
+                <thead className="bg-slate-100 text-[10px] uppercase tracking-wide text-slate-500">
+                  <tr>
+                    {columns.map((column) => (
+                      <th key={column.key} className={`border-b border-slate-200 px-3 py-2 text-left ${column.className ?? ''}`}>
+                        {column.header}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+              ) : null}
               <tbody>
                 {data.map((row, index) => (
                   <tr key={index} className={rowClassName}>
@@ -152,15 +156,17 @@ const Table = <T,>({
             isRowBlock ? 'border-separate [border-spacing:0_8px]' : 'border-collapse'
           }`}
         >
-          <thead className={`bg-slate-100 text-xs uppercase tracking-wide text-slate-500 ${stickyHeader ? 'sticky top-0 z-20' : ''}`}>
-            <tr>
-              {columns.map((column) => (
-                <th key={column.key} className={`px-4 py-3 ${column.className ?? ''}`}>
-                  {column.header}
-                </th>
-              ))}
-            </tr>
-          </thead>
+          {!hideHeader ? (
+            <thead className={`bg-slate-100 text-xs uppercase tracking-wide text-slate-500 ${stickyHeader ? 'sticky top-0 z-20' : ''}`}>
+              <tr>
+                {columns.map((column) => (
+                  <th key={column.key} className={`px-4 py-3 ${column.className ?? ''}`}>
+                    {column.header}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          ) : null}
           <tbody>
             {data.length === 0 ? (
               <tr>

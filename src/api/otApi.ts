@@ -55,6 +55,13 @@ export type OtCargoUsuarioPayload = {
   items: OtCargoUsuarioItemPayload[]
 }
 
+export type OtRegistroCompletoVenta = {
+  cabecera: UnknownRecord | null
+  instalados: UnknownRecord[]
+  retirados: UnknownRecord[]
+  cargoUsuario: UnknownRecord[]
+}
+
 const isRecord = (value: unknown): value is UnknownRecord => typeof value === 'object' && value !== null
 
 const pickValue = (record: UnknownRecord, keys: string[]): unknown => {
@@ -191,6 +198,14 @@ export const fetchOtList = async (params?: OtListParams): Promise<OtSummary[]> =
   return rows.map(mapOtSummary)
 }
 
+export const fetchOtFinalizadas = async (params?: { fecha?: string; usuario?: number }): Promise<OtSummary[]> => {
+  const { data } = await api.get('/ot/finalizadas', {
+    params: sanitizeParams(params),
+  })
+  const rows = normalizeArrayResponse<UnknownRecord>(data)
+  return rows.map(mapOtSummary)
+}
+
 const buildListaOtQuery = (params: ListaOtParams): string => {
   const searchParams = new URLSearchParams()
   searchParams.set('fecha', params.fecha)
@@ -231,6 +246,137 @@ export const fetchListaOt = async (params: ListaOtParams): Promise<OtSummary[]> 
   return rows.map(mapOtSummary)
 }
 
+const buildOtSummaryMergeKey = (row: OtSummary): string => {
+  const source = row as UnknownRecord
+  const ot = readString(source, [
+    'ot',
+    'OT',
+    'ordenTrabajo',
+    'OrdenTrabajo',
+    'orden_trabajo',
+    'Orden_Trabajo',
+    'codigo',
+    'Codigo',
+  ]).trim()
+  const cliente = readString(source, [
+    'cliente_nro',
+    'Cliente_Nro',
+    'clienteNro',
+    'ClienteNro',
+    'codigo_cliente',
+    'Codigo_Cliente',
+    'codigoCliente',
+    'CodigoCliente',
+    'CODIGO',
+  ]).trim()
+  if (ot && cliente) {
+    return `otcliente:${ot}|${cliente}`
+  }
+
+  const idVenta = readNumber(source, ['id_venta', 'Id_Venta', 'idVenta', 'IdVenta', 'id', 'Id'])
+  if (typeof idVenta === 'number' && Number.isFinite(idVenta) && idVenta > 0) {
+    return `idventa:${Math.trunc(idVenta)}`
+  }
+
+  const fecha = readString(source, [
+    'fechaEjecucion',
+    'Fecha_Ejecucion',
+    'FechaEjecucion',
+    'fecha',
+    'Fecha',
+    'inicio_agendado',
+    'Inicio_Agendado',
+  ]).trim()
+  const origen = readString(source, ['origen', 'Origen']).trim().toLowerCase()
+  return `${ot}|${cliente}|${fecha}|${origen}`
+}
+
+const mergeOtSummaries = (...groups: OtSummary[][]): OtSummary[] => {
+  const out = new Map<string, OtSummary>()
+  const isManualRow = (row: OtSummary): boolean => {
+    const source = row as UnknownRecord
+    const origen = readString(source, ['origen', 'Origen']).trim().toLowerCase()
+    return origen.includes('manual')
+  }
+  for (const rows of groups) {
+    for (const row of rows) {
+      const key = buildOtSummaryMergeKey(row)
+      const current = out.get(key)
+      if (!current) {
+        out.set(key, row)
+        continue
+      }
+      const currentManual = isManualRow(current)
+      const candidateManual = isManualRow(row)
+      if (currentManual && !candidateManual) {
+        out.set(key, row)
+      }
+    }
+  }
+  return Array.from(out.values())
+}
+
+const filterOtRowsByTecnico = (rows: OtSummary[], tecnico?: string): OtSummary[] => {
+  const tecnicoNorm = (tecnico ?? '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+  if (!tecnicoNorm) return rows
+
+  return rows.filter((row) => {
+    const source = row as UnknownRecord
+    const tecnicoRow = readString(source, [
+      'tecnico',
+      'Tecnico',
+      'tecnico_nombre',
+      'tecnicoNombre',
+      'nombre_tecnico',
+      'NombreTecnico',
+      'nombreUsuario',
+      'NombreUsuario',
+      'usuario',
+      'Usuario',
+      'nombre',
+      'Nombre',
+      'vendedor',
+      'Vendedor',
+      'nombreVendedor',
+      'NombreVendedor',
+    ])
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+
+    if (!tecnicoRow) return false
+    return tecnicoRow === tecnicoNorm || tecnicoRow.includes(tecnicoNorm) || tecnicoNorm.includes(tecnicoRow)
+  })
+}
+
+const fetchOtWebPendientesConFallback = async (params: {
+  fecha: string
+  idUsuario?: number
+  tecnico?: string
+  rol?: string
+}): Promise<OtSummary[]> => {
+  const otWebRows = await fetchOtList({
+    fecha: params.fecha,
+    usuario: params.idUsuario,
+    rol: params.rol,
+    pendiente: true,
+  }).catch(() => [])
+  if (otWebRows.length > 0) {
+    return otWebRows
+  }
+
+  const otWebRowsSinFiltro = await fetchOtList({
+    fecha: params.fecha,
+    pendiente: true,
+  }).catch(() => [])
+  return filterOtRowsByTecnico(otWebRowsSinFiltro, params.tecnico)
+}
+
 export const fetchSupervisorUltimoEstadoDia = async (params: {
   fecha: string
   idUsuario?: number
@@ -238,12 +384,21 @@ export const fetchSupervisorUltimoEstadoDia = async (params: {
   rol?: string
 }): Promise<OtSummary[]> => {
   try {
-    return await fetchListaOt({
+    const listaOtRows = await fetchListaOt({
       fecha: params.fecha,
       tecnico: params.tecnico,
       idUsuario: params.idUsuario,
       rol: params.rol,
     })
+    const otWebRows = await fetchOtWebPendientesConFallback(params)
+
+    if (listaOtRows.length === 0) {
+      return otWebRows
+    }
+    if (otWebRows.length === 0) {
+      return listaOtRows
+    }
+    return mergeOtSummaries(listaOtRows, otWebRows)
   } catch (listaOtError) {
     // Fallback legado por compatibilidad con entornos antiguos.
     const queryParams: Record<string, string | number> = { fecha: params.fecha }
@@ -264,7 +419,11 @@ export const fetchSupervisorUltimoEstadoDia = async (params: {
       try {
         const { data } = await api.get(endpoint, { params: queryParams })
         const rows = normalizeArrayResponse<UnknownRecord>(data)
-        return rows.map(mapOtSummary)
+        const mapped = rows.map(mapOtSummary)
+        if (mapped.length > 0) {
+          const otWebRows = await fetchOtWebPendientesConFallback(params)
+          return otWebRows.length > 0 ? mergeOtSummaries(mapped, otWebRows) : mapped
+        }
       } catch (error) {
         const status = (error as { response?: { status?: number } })?.response?.status
         if (status === 404 || status === 405 || status === 500) {
@@ -274,7 +433,14 @@ export const fetchSupervisorUltimoEstadoDia = async (params: {
       }
     }
 
-    throw listaOtError
+    return await fetchOtList({
+      fecha: params.fecha,
+      usuario: params.idUsuario,
+      rol: params.rol,
+      pendiente: true,
+    }).catch(() => {
+      throw listaOtError
+    })
   }
 }
 
@@ -304,6 +470,54 @@ export const fetchOtMateriales = async (id: number, tipo: OtMaterialTipo): Promi
   return rows.map(mapMaterial)
 }
 
+const toUnknownRecord = (payload: unknown): UnknownRecord | null => {
+  const unwrapped = unwrapData(payload)
+  if (Array.isArray(unwrapped)) {
+    const first = normalizeArrayResponse<UnknownRecord>(unwrapped)[0]
+    return first && isRecord(first) ? first : null
+  }
+  return isRecord(unwrapped) ? (unwrapped as UnknownRecord) : null
+}
+
+const toUnknownRecordList = (payload: unknown): UnknownRecord[] => {
+  const unwrapped = unwrapData(payload)
+  return normalizeArrayResponse<UnknownRecord>(unwrapped)
+}
+
+export const fetchOtRegistroCompleto = async (idVenta: number): Promise<OtRegistroCompletoVenta> => {
+  if (!Number.isFinite(idVenta) || idVenta <= 0) {
+    throw new Error('idVenta invalido para cargar registro completo.')
+  }
+
+  try {
+    const { data } = await api.get(`/ot/${idVenta}/registro-completo`)
+    const unwrapped = unwrapData(data)
+    const payload = isRecord(unwrapped) ? (unwrapped as UnknownRecord) : {}
+    return {
+      cabecera: toUnknownRecord(payload.cabecera),
+      instalados: toUnknownRecordList(payload.instalados),
+      retirados: toUnknownRecordList(payload.retirados),
+      cargoUsuario: toUnknownRecordList(payload.cargoUsuario),
+    }
+  } catch (error) {
+    if (!shouldFallbackToLegacyEndpoint(error)) throw error
+  }
+
+  const [cabeceraRaw, instaladosRaw, retiradosRaw, cargoRaw] = await Promise.all([
+    api.get(`/ot/${idVenta}`),
+    api.get(`/ot/${idVenta}/instalados`),
+    api.get(`/ot/${idVenta}/retirados`),
+    api.get(`/ot/${idVenta}/cargo-usuario`),
+  ])
+
+  return {
+    cabecera: toUnknownRecord(cabeceraRaw.data),
+    instalados: toUnknownRecordList(instaladosRaw.data),
+    retirados: toUnknownRecordList(retiradosRaw.data),
+    cargoUsuario: toUnknownRecordList(cargoRaw.data),
+  }
+}
+
 export const createOtRealizada = async (payload: OtRealizadaPayload): Promise<void> => {
   await api.post('/ot/realizada', payload)
 }
@@ -312,8 +526,11 @@ export const createOtDetalle = async (payload: OtRegistrarDetallePayload): Promi
   const { data } = await api.post('/ot/detalle-materiales', payload)
   const raw = unwrapData(data)
   if (!isRecord(raw)) return {}
+  const idVenta =
+    readNumber(raw, ['idVenta', 'IdVenta', 'id_venta', 'Id_Venta', 'idCodigoVenta', 'IdCodigoVenta', 'id_codigoventa', 'Id_CodigoVenta']) ??
+    undefined
   return {
-    idVenta: readNumber(raw, ['idVenta', 'IdVenta', 'id_venta', 'Id_Venta']) ?? undefined,
+    idVenta,
     numeroOrden: readNumber(raw, ['numeroOrden', 'NumeroOrden', 'ordenTrabajo', 'OrdenTrabajo']) ?? undefined,
   }
 }
@@ -544,7 +761,16 @@ export const validateVentaYDetalle = async (params: {
   fecha: string
   ot: string
   clienteNro: string
-}): Promise<{ existeVenta: boolean; tieneDetalleEnCodigoVenta: boolean }> => {
+  incluirManual?: boolean
+  desdeAgenda?: boolean
+}): Promise<{
+  existeVenta: boolean
+  tieneDetalleEnCodigoVenta: boolean
+  cantidadVentas: number
+  cantidadDetalles: number
+  addMaterialOCargoUsuario: boolean
+  habilitarCargarMaterial: boolean
+}> => {
   const rawFecha = params.fecha.trim()
   const isoLike = rawFecha.match(/^(\d{4})-(\d{2})-(\d{2})/)
   const dmyLike = rawFecha.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
@@ -562,9 +788,11 @@ export const validateVentaYDetalle = async (params: {
     fecha: fechaDdMmYyyy,
     nroOT: params.ot.trim(),
     numeroCliente: params.clienteNro.trim(),
+    incluirManual: params.incluirManual === true,
+    desdeAgenda: params.desdeAgenda === true,
   }
 
-  let data: unknown
+  let data: unknown = null
   try {
     const response = await api.get('/ot/venta/validar-detalle', { params: queryParams })
     data = response.data
@@ -578,16 +806,43 @@ export const validateVentaYDetalle = async (params: {
   const payload = isRecord(envelopeData) ? envelopeData : {}
 
   const existeVentaFlag = readBoolean(payload, ['existeVenta', 'ExisteVenta', 'ventaExiste', 'VentaExiste'])
-  const cantidadVentas = readNumber(payload, ['cantidadVentas', 'CantidadVentas', 'countVentas', 'CountVentas']) ?? 0
+  const cantidadVentas = readNumber(payload, ['cantidadVentas', 'CantidadVentas', 'countVentas', 'CountVentas']) ?? (existeVentaFlag ? 1 : 0)
   const existeVenta = existeVentaFlag !== undefined ? existeVentaFlag : cantidadVentas > 0 ? true : resolveVentaExists(data)
 
   const detalleFlag = readBoolean(payload, ['tieneDetalleEnCodigoVenta', 'TieneDetalleEnCodigoVenta', 'existeDetalle', 'ExisteDetalle'])
-  const cantidadDetalles = readNumber(payload, ['cantidadDetalles', 'CantidadDetalles', 'countDetalles', 'CountDetalles']) ?? 0
+  const cantidadDetalles = readNumber(payload, ['cantidadDetalles', 'CantidadDetalles', 'countDetalles', 'CountDetalles']) ?? (detalleFlag ? 1 : 0)
   const tieneDetalleEnCodigoVenta = detalleFlag !== undefined ? detalleFlag : cantidadDetalles > 0
+
+  const addMaterialFlag = readBoolean(payload, [
+    'addMaterialOCargoUsuario',
+    'AddMaterialOCargoUsuario',
+    'addMaterial_o_CargoUsuario',
+    'AddMaterial_o_CargoUsuario',
+    'addmaterial_o_cargousuario',
+  ])
+
+  const habilitarCargarMaterialFlag = readBoolean(payload, [
+    'habilitarCargarMaterial',
+    'HabilitarCargarMaterial',
+    'puedeCargarMaterial',
+    'PuedeCargarMaterial',
+  ])
+
+  const addMaterialOCargoUsuario = addMaterialFlag ?? false
+  const habilitarCargarMaterial =
+    habilitarCargarMaterialFlag !== undefined
+      ? habilitarCargarMaterialFlag
+      : addMaterialFlag !== undefined
+        ? addMaterialFlag && !tieneDetalleEnCodigoVenta
+        : existeVenta && !tieneDetalleEnCodigoVenta
 
   return {
     existeVenta,
     tieneDetalleEnCodigoVenta,
+    cantidadVentas,
+    cantidadDetalles,
+    addMaterialOCargoUsuario,
+    habilitarCargarMaterial,
   }
 }
 
@@ -725,6 +980,126 @@ export const validateExisteCierreAlmacen = async (params: {
   return {
     bloqueado: resolved ?? false,
     mensaje: isRecord(data) && typeof data.message === 'string' ? data.message : '',
+  }
+}
+
+const inferMovimientosBlockedFromMessage = (message: string): boolean | null => {
+  const normalized = message.trim().toLowerCase()
+  if (!normalized) return null
+
+  if (
+    normalized.includes('no hay transacciones pendientes') ||
+    normalized.includes('sin transacciones pendientes') ||
+    normalized.includes('sin movimientos pendientes')
+  ) {
+    return false
+  }
+
+  if (
+    normalized.includes('transacciones pendientes') ||
+    normalized.includes('movimientos pendientes') ||
+    normalized.includes('verificar fecha servidor')
+  ) {
+    return true
+  }
+
+  return null
+}
+
+const extractApiMessage = (payload: unknown): string => {
+  if (payload === undefined || payload === null) return ''
+
+  if (typeof payload === 'string') return payload.trim()
+  if (typeof payload === 'number' || typeof payload === 'boolean') return ''
+
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const nested = extractApiMessage(item)
+      if (nested) return nested
+    }
+    return ''
+  }
+
+  if (!isRecord(payload)) return ''
+
+  const directMessage = readString(payload, [
+    'mensaje',
+    'Mensaje',
+    'message',
+    'Message',
+    'detalle',
+    'Detalle',
+    'descripcion',
+    'Descripcion',
+    'error',
+    'Error',
+  ]).trim()
+  if (directMessage) return directMessage
+
+  const nestedData = pickValue(payload, ['data', 'Data', 'value', 'Value'])
+  const nestedMessage = extractApiMessage(nestedData)
+  if (nestedMessage) return nestedMessage
+
+  for (const value of Object.values(payload)) {
+    const nested = extractApiMessage(value)
+    if (nested) return nested
+  }
+
+  return ''
+}
+
+export const validateMovimientosCierre = async (params: {
+  fecha?: string
+  grupo?: string
+  idRuta?: number
+  idSucursal?: number | null
+}): Promise<{ bloqueado: boolean; mensaje: string }> => {
+  const queryParams: Record<string, string | number> = {}
+  if (typeof params.fecha === 'string' && params.fecha.trim()) {
+    queryParams.fecha = toIsoDateParam(params.fecha)
+  }
+  if (typeof params.grupo === 'string' && params.grupo.trim()) {
+    queryParams.grupo = params.grupo.trim()
+  }
+  if (typeof params.idRuta === 'number' && Number.isFinite(params.idRuta) && params.idRuta > 0) {
+    queryParams.idRuta = params.idRuta
+  }
+  if (typeof params.idSucursal === 'number' && Number.isFinite(params.idSucursal) && params.idSucursal > 0) {
+    queryParams.idSucursal = params.idSucursal
+  }
+
+  const endpoints = ['/cuadre/spx_ValidaMovimientosCierre', '/ot/spx_ValidaMovimientosCierre', '/ot/valida-movimientos-cierre']
+
+  let data: unknown
+  let lastFallbackError: unknown = null
+  for (const endpoint of endpoints) {
+    try {
+      const response = await api.get(endpoint, {
+        params: Object.keys(queryParams).length > 0 ? queryParams : undefined,
+      })
+      data = response.data
+      lastFallbackError = null
+      break
+    } catch (error) {
+      if (!shouldFallbackToLegacyEndpoint(error)) {
+        throw error
+      }
+      lastFallbackError = error
+    }
+  }
+
+  if (lastFallbackError) {
+    throw lastFallbackError
+  }
+
+  const message = extractApiMessage(data)
+  const payload = isRecord(data) && Object.prototype.hasOwnProperty.call(data, 'data') ? data.data : data
+  const resolved = coerceApiBoolean(payload)
+  const inferredFromMessage = inferMovimientosBlockedFromMessage(message)
+
+  return {
+    bloqueado: resolved ?? inferredFromMessage ?? false,
+    mensaje: message,
   }
 }
 
