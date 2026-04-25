@@ -50,6 +50,7 @@ const mapTecnico = (row: Record<string, unknown>): LlamadaAtencionTecnico => {
   return {
     idTecnico: normalizeString(readValue(row, ['idTecnico', 'id_tecnico', 'idtecnico', 'id_vendedor', 'idvendedor'])),
     tecnico: normalizeString(readValue(row, ['tecnico', 'nombre', 'nombrevendedor', 'vendedor'])),
+    codEmpleado: normalizeString(readValue(row, ['codEmpleado', 'cod_empleado', 'codempleado'])) || undefined,
     cuentaSf: normalizeString(readValue(row, ['cuentaSf', 'cuenta_sf', 'cuentasf'])) || undefined,
     salesforce: normalizeString(readValue(row, ['salesforce'])) || undefined,
     habilidad: normalizeString(readValue(row, ['habilidad'])) || undefined,
@@ -69,6 +70,8 @@ const mapRegistro = (row: Record<string, unknown>): LlamadaAtencionRegistro => {
     idLlamadaAtencion: normalizeString(readValue(row, ['idLlamadaAtencion', 'id_llamadaatencion', 'id_llamadaatencion'])),
     idTecnico: normalizeString(readValue(row, ['idTecnico', 'id_tecnico', 'idtecnico'])) || undefined,
     tecnico: normalizeString(readValue(row, ['tecnico', 'tecnicoNombre', 'tecniconombre'])) || undefined,
+    codEmpleado: normalizeString(readValue(row, ['codEmpleado', 'cod_empleado', 'codempleado'])) || undefined,
+    idUsuarioSupervisor: Number(readValue(row, ['idUsuarioSupervisor', 'id_usuariosupervisor', 'idsupervisor'])) || undefined,
     idTipoComunicacion: normalizeString(readValue(row, ['idTipoComunicacion', 'id_tipocomunicacion'])) || undefined,
     tipoComunicacion: normalizeString(readValue(row, ['tipoComunicacion', 'tipocomunicacion'])) || undefined,
     fechaRegistro: normalizeString(readValue(row, ['fechaRegistro', 'fecha_registro'])) || undefined,

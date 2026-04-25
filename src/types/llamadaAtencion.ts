@@ -1,6 +1,7 @@
 export type LlamadaAtencionTecnico = {
   idTecnico: string
   tecnico: string
+  codEmpleado?: string
   cuentaSf?: string
   salesforce?: string
   habilidad?: string
@@ -16,6 +17,8 @@ export type LlamadaAtencionRegistro = {
   idLlamadaAtencion: string
   idTecnico?: string
   tecnico?: string
+  codEmpleado?: string
+  idUsuarioSupervisor?: number
   idTipoComunicacion?: string
   tipoComunicacion?: string
   fechaRegistro?: string
@@ -43,6 +46,7 @@ export type LlamadaAtencionTecnicosParams = {
 
 export type LlamadaAtencionCreatePayload = {
   idTecnico: string
+  codEmpleado: string
   idTipoComunicacion: string
   motivo: string
   descripcion?: string

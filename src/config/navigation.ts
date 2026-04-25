@@ -4,6 +4,7 @@ export type NavigationItem = {
   routePatterns: string[]
   requiredPageNames?: string[]
   requiredAnyPageNames?: string[]
+  allowedRoles?: string[]
   showInSidebar?: boolean
   sidebarLabelFromMenu?: boolean
 }
@@ -117,6 +118,20 @@ export const navigationItems: NavigationItem[] = [
     routePatterns: ['/supervisor/llamada-atencion'],
     requiredAnyPageNames: ['LlamadaAtencionPage', 'LlamadaAtencionPrincipal'],
     sidebarLabelFromMenu: true,
+  },
+  {
+    label: 'Supervision',
+    to: '/supervisor/supervision',
+    routePatterns: ['/supervisor/supervision'],
+    allowedRoles: ['supervisor'],
+    sidebarLabelFromMenu: false,
+  },
+  {
+    label: 'Central Grupos',
+    to: '/central/grupos',
+    routePatterns: ['/central/grupos'],
+    allowedRoles: ['central'],
+    showInSidebar: true,
   },
   {
     label: 'Pool de Privilegios',

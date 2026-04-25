@@ -61,6 +61,7 @@ const mapSessionToUser = (session: SessionData | null): UsuarioSesion | null => 
 }
 
 const normalizePageName = (value: string): string => value.trim().toLowerCase()
+const normalizeRoleName = (value: string): string => value.trim().toLowerCase()
 
 const resolveRoleData = (usuario: UsuarioSesion | null, permisos: PermisosUsuario | null): { roleName: string; roleId: number } => {
   const roleName = (permisos?.rol ?? usuario?.rol ?? '').trim()
@@ -241,7 +242,27 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
 
   const canAccessNavigationItem = useCallback(
     (item: NavigationItem): boolean => {
-      if (!permisos) return false
+      if (!permisos) {
+        if (!(Number.isFinite(roleId) && roleId > 0)) {
+          return false
+        }
+        if (item.allowedRoles?.length) {
+          const currentRole = normalizeRoleName(roleName)
+          const roleAllowed = item.allowedRoles.map(normalizeRoleName).includes(currentRole)
+          if (!roleAllowed) {
+            return false
+          }
+        }
+        const hasPageRules = Boolean(item.requiredPageNames?.length || item.requiredAnyPageNames?.length)
+        return !hasPageRules
+      }
+      if (item.allowedRoles?.length) {
+        const currentRole = normalizeRoleName(roleName)
+        const roleAllowed = item.allowedRoles.map(normalizeRoleName).includes(currentRole)
+        if (!roleAllowed) {
+          return false
+        }
+      }
       const hasPageRules = Boolean(item.requiredPageNames?.length || item.requiredAnyPageNames?.length)
       if (
         hasPageRules &&
@@ -262,7 +283,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       }
       return true
     },
-    [pageNamesAsignadas, permisos]
+    [pageNamesAsignadas, permisos, roleId, roleName]
   )
 
   const visibleNavigationItems = useMemo(
@@ -277,7 +298,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
   const canAccessPath = useCallback(
     (pathname: string): boolean => {
       if (!token) return false
-      if (!permisos) return false
+      if (!permisos && !(Number.isFinite(roleId) && roleId > 0)) return false
       const normalizedPath = pathname.trim() || '/'
 
       const matchedNavigationItem = navigationItems.find((item) =>
@@ -287,7 +308,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       if (!matchedNavigationItem) return true
       return canAccessNavigationItem(matchedNavigationItem)
     },
-    [canAccessNavigationItem, permisos, token]
+    [canAccessNavigationItem, permisos, roleId, token]
   )
 
   const value = useMemo<AuthContextValue>(

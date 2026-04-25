@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useParams } from 'react-router-dom'
 import ProtectedRoute from './ProtectedRoute'
 import MainLayout from '../components/layout/MainLayout'
 import AdminRoute from '../components/guards/AdminRoute'
+import TecnicoInicioJornadaGuard from '../components/guards/TecnicoInicioJornadaGuard'
 import { useAuth } from '../context/AuthContext'
 import LoginPage from '../pages/LoginPage'
 import OtDashboardPage from '../pages/OtDashboardPage'
@@ -18,8 +19,11 @@ import CuNoRealizadoDetailPage from '../pages/CuNoRealizadoDetailPage'
 import CuNoRealizadoCreatePage from '../pages/CuNoRealizadoCreatePage'
 import ConformacionCuadrillaPage from '../pages/ConformacionCuadrillaPage'
 import LlamadaAtencionPage from '../pages/LlamadaAtencionPage'
+import SupervisorSupervisionPage from '../pages/SupervisorSupervisionPage'
+import CentralGruposPage from '../pages/CentralGruposPage'
 import PrivilegiosPage from '../pages/admin/PrivilegiosPage'
 import ForbiddenPage from '../pages/ForbiddenPage'
+import TecnicoInicioJornadaPage from '../pages/TecnicoInicioJornadaPage'
 
 const LegacyOtDetailRedirect = () => {
   const { id } = useParams()
@@ -34,9 +38,11 @@ const AppRoutes = () => {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/403" element={<ForbiddenPage />} />
       <Route element={<ProtectedRoute />}>
-        <Route element={<MainLayout />}>
-          <Route index element={<Navigate to={defaultPrivatePath} replace />} />
-          <Route path="/GestionOTs" element={<OtDashboardPage />} />
+        <Route element={<TecnicoInicioJornadaGuard />}>
+          <Route element={<MainLayout />}>
+            <Route index element={<Navigate to={defaultPrivatePath} replace />} />
+            <Route path="/tecnico/inicio-jornada" element={<TecnicoInicioJornadaPage />} />
+            <Route path="/GestionOTs" element={<OtDashboardPage />} />
           <Route path="/GestionOTs/crear" element={<OtCreatePage />} />
           <Route path="/GestionOTs/lista" element={<OtListPage />} />
           <Route path="/GestionOTs/:id" element={<OtDetailPage />} />
@@ -64,8 +70,11 @@ const AppRoutes = () => {
           <Route path="/supervisor/conformacion-cuadrilla/crear" element={<Navigate to="/supervisor/conformacion-cuadrilla" replace />} />
           <Route path="/supervisor/conformacion-cuadrilla/editar" element={<Navigate to="/supervisor/conformacion-cuadrilla" replace />} />
           <Route path="/supervisor/llamada-atencion" element={<LlamadaAtencionPage />} />
-          <Route element={<AdminRoute />}>
-            <Route path="/admin/privilegios" element={<PrivilegiosPage />} />
+          <Route path="/supervisor/supervision" element={<SupervisorSupervisionPage />} />
+          <Route path="/central/grupos" element={<CentralGruposPage />} />
+            <Route element={<AdminRoute />}>
+              <Route path="/admin/privilegios" element={<PrivilegiosPage />} />
+            </Route>
           </Route>
         </Route>
       </Route>
