@@ -19,7 +19,7 @@ export type InicioJornadaEncargado = {
 
 export type InicioJornadaCreatePayload = {
   idAuxiliar?: number | null
-  idEncargado: number
+  idEncargado?: number
   capacitado: 'SI' | 'NO'
   charla: 'SI' | 'NO'
   botiquin: 'SI' | 'NO'

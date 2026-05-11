@@ -11,8 +11,7 @@ const TecnicoInicioJornadaGuard = () => {
   const { isAuthenticated, roleId, roleName, usuario } = useAuth()
   const roleNormalized = roleName.trim().toLowerCase()
   const isTecnico = roleId === 8 || roleNormalized === 'tecnico'
-  const isSupervisor = roleNormalized === 'supervisor'
-  const requiresInicioJornada = isTecnico || isSupervisor
+  const requiresInicioJornada = isTecnico
 
   const sucursalesQuery = useQuery({
     queryKey: ['auth-sucursales-tecnico-inicio-jornada-guard'],

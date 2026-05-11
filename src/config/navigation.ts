@@ -120,6 +120,13 @@ export const navigationItems: NavigationItem[] = [
     sidebarLabelFromMenu: true,
   },
   {
+    label: 'Supervision',
+    to: '/supervisor/supervision',
+    routePatterns: ['/supervisor/supervision'],
+    allowedRoles: ['supervisor'],
+    sidebarLabelFromMenu: false,
+  },
+  {
     label: 'Central Grupos',
     to: '/central/grupos',
     routePatterns: ['/central/grupos'],

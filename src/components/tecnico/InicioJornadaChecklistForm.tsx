@@ -1,8 +1,8 @@
 import { useRef, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation } from '@tanstack/react-query'
 import Button from '../common/Button'
 import Field from '../common/Field'
-import { fetchInicioJornadaEncargados, registrarInicioJornada } from '../../api/inicioJornadaApi'
+import { registrarInicioJornada } from '../../api/inicioJornadaApi'
 import { getApiErrorMessage } from '../../services/httpClient'
 
 type SiNo = 'SI' | 'NO'
@@ -22,7 +22,6 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
   })
 
 const InicioJornadaChecklistForm = ({ sucursal, idTecnico, onRegistered }: InicioJornadaChecklistFormProps) => {
-  const [idEncargado, setIdEncargado] = useState('')
   const [fechaVencimiento, setFechaVencimiento] = useState('')
   const [capacitado, setCapacitado] = useState<SiNo>('NO')
   const [charla, setCharla] = useState<SiNo>('NO')
@@ -40,15 +39,9 @@ const InicioJornadaChecklistForm = ({ sucursal, idTecnico, onRegistered }: Inici
   const elegirImagenInputRef = useRef<HTMLInputElement | null>(null)
   const tomarFotoInputRef = useRef<HTMLInputElement | null>(null)
 
-  const encargadosQuery = useQuery({
-    queryKey: ['tecnico-inicio-jornada', 'encargados', sucursal || 'auto'],
-    queryFn: () => fetchInicioJornadaEncargados(sucursal),
-  })
-
   const registrarMutation = useMutation({
     mutationFn: () =>
       registrarInicioJornada({
-        idEncargado: Number(idEncargado),
         fechaVencimiento,
         capacitado,
         charla,
@@ -85,9 +78,9 @@ const InicioJornadaChecklistForm = ({ sucursal, idTecnico, onRegistered }: Inici
   }
 
   const handleSubmit = () => {
-    if (!idEncargado || !fechaVencimiento || !imagen) {
+    if (!fechaVencimiento || !imagen) {
       setFeedback(null)
-      setError('Encargado, fecha de vencimiento e imagen son obligatorios.')
+      setError('Fecha de vencimiento e imagen son obligatorios.')
       return
     }
     registrarMutation.mutate()
@@ -100,14 +93,7 @@ const InicioJornadaChecklistForm = ({ sucursal, idTecnico, onRegistered }: Inici
       {feedback ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{feedback}</div> : null}
 
       <Field label="Encargado (Supervisor)">
-        <select className="input-base" value={idEncargado} onChange={(event) => setIdEncargado(event.target.value)}>
-          <option value="">Selecciona encargado</option>
-          {(encargadosQuery.data ?? []).map((item) => (
-            <option key={item.idEncargado} value={item.idEncargado}>
-              {item.encargado} ({item.idEncargado})
-            </option>
-          ))}
-        </select>
+        <input className="input-base bg-slate-100" value="Asignado automaticamente por conformacion diaria" readOnly />
       </Field>
 
       <Field label="Fecha de vencimiento extintor">

@@ -221,3 +221,13 @@ export const cambiarColaboradorBackupCentral = async (payload: {
   const { data } = await api.post(`${BASE_PATH}/cambiar-colaborador-backup`, payload)
   return (data && typeof data === 'object' && 'data' in data ? (data as { data: Record<string, unknown> }).data : data) as Record<string, unknown>
 }
+
+export const cambiarSupervisorMasivoCentral = async (payload: {
+  idSupervisorOrigen: number
+  idSupervisorDestino: number
+  idGrupos?: number[]
+  sucursal?: string
+}): Promise<Record<string, unknown>> => {
+  const { data } = await api.post(`${BASE_PATH}/cambiar-supervisor-masivo`, payload)
+  return (data && typeof data === 'object' && 'data' in data ? (data as { data: Record<string, unknown> }).data : data) as Record<string, unknown>
+}

@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import Button from '../components/common/Button'
 import Field from '../components/common/Field'
 import FormCard from '../components/common/FormCard'
-import { fetchInicioJornadaEncargados, fetchInicioJornadaEstado, registrarInicioJornada } from '../api/inicioJornadaApi'
+import { cerrarJornada, fetchCierreJornadaEstado, fetchInicioJornadaEstado, registrarInicioJornada } from '../api/inicioJornadaApi'
 import { useAuth } from '../context/AuthContext'
 import { fetchSucursales } from '../services/authApi'
 import { getApiErrorMessage } from '../services/httpClient'
@@ -22,9 +22,10 @@ const readFileAsDataUrl = (file: File): Promise<string> =>
 const TecnicoInicioJornadaPage = () => {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
-  const { usuario, defaultPrivatePath } = useAuth()
+  const { usuario, defaultPrivatePath, roleId, roleName } = useAuth()
+  const roleNormalized = roleName.trim().toLowerCase()
+  const isTecnico = roleId === 8 || roleNormalized === 'tecnico'
 
-  const [idEncargado, setIdEncargado] = useState('')
   const [fechaVencimiento, setFechaVencimiento] = useState('')
   const [capacitado, setCapacitado] = useState<SiNo>('NO')
   const [charla, setCharla] = useState<SiNo>('NO')
@@ -38,6 +39,15 @@ const TecnicoInicioJornadaPage = () => {
   const [imagen, setImagen] = useState('')
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [codigoCliente, setCodigoCliente] = useState('')
+  const [danoMaterial, setDanoMaterial] = useState<SiNo>('NO')
+  const [observacionMaterial, setObservacionMaterial] = useState('')
+  const [danoPersona, setDanoPersona] = useState<SiNo>('NO')
+  const [observacionPersona, setObservacionPersona] = useState('')
+  const [novedadesTrabajo, setNovedadesTrabajo] = useState<SiNo>('NO')
+  const [observacionNovedades, setObservacionNovedades] = useState('')
+  const [ubicacionGeoRef, setUbicacionGeoRef] = useState('')
+  const normalizeOnlyDigits = (value: string): string => value.replace(/\D+/g, '')
 
   const sucursalesQuery = useQuery({
     queryKey: ['auth-sucursales-tecnico-inicio-jornada-page'],
@@ -58,15 +68,9 @@ const TecnicoInicioJornadaPage = () => {
     queryFn: () => fetchInicioJornadaEstado(loginSucursal),
   })
 
-  const encargadosQuery = useQuery({
-    queryKey: ['tecnico-inicio-jornada', 'encargados', loginSucursal || 'auto'],
-    queryFn: () => fetchInicioJornadaEncargados(loginSucursal),
-  })
-
   const registrarMutation = useMutation({
     mutationFn: () =>
       registrarInicioJornada({
-        idEncargado: Number(idEncargado),
         fechaVencimiento,
         capacitado,
         charla,
@@ -93,6 +97,34 @@ const TecnicoInicioJornadaPage = () => {
     },
   })
 
+  const cierreEstadoQuery = useQuery({
+    queryKey: ['tecnico-inicio-jornada', 'cierre-estado'],
+    queryFn: fetchCierreJornadaEstado,
+  })
+
+  const cierreMutation = useMutation({
+    mutationFn: () =>
+      cerrarJornada({
+        codigoCliente: normalizeOnlyDigits(codigoCliente),
+        danoMaterial,
+        observacionMaterial: danoMaterial === 'SI' ? observacionMaterial : undefined,
+        danoPersona,
+        observacionPersona: danoPersona === 'SI' ? observacionPersona : undefined,
+        novedadesTrabajo,
+        observacionNovedades: novedadesTrabajo === 'SI' ? observacionNovedades : undefined,
+        ubicacionGeoRef,
+      }),
+    onSuccess: () => {
+      setError(null)
+      setFeedback('Cierre de jornada registrado correctamente.')
+      queryClient.invalidateQueries({ queryKey: ['tecnico-inicio-jornada', 'cierre-estado'] })
+    },
+    onError: (err) => {
+      setFeedback(null)
+      setError(getApiErrorMessage(err, 'No se pudo registrar cierre de jornada.'))
+    },
+  })
+
   const handleImageChange = async (file: File | null) => {
     if (!file) return
     try {
@@ -104,12 +136,47 @@ const TecnicoInicioJornadaPage = () => {
   }
 
   const handleSubmit = () => {
-    if (!idEncargado || !fechaVencimiento || !imagen) {
+    if (!fechaVencimiento || !imagen) {
       setFeedback(null)
-      setError('Encargado, fecha de vencimiento e imagen son obligatorios.')
+      setError('Fecha de vencimiento e imagen son obligatorios.')
       return
     }
     registrarMutation.mutate()
+  }
+
+  const handleCerrarJornada = () => {
+    const codigoSoloNumeros = normalizeOnlyDigits(codigoCliente)
+    if (!codigoSoloNumeros || !ubicacionGeoRef.trim()) {
+      setFeedback(null)
+      setError('Codigo cliente y ubicacion son obligatorios para cierre.')
+      return
+    }
+    if (danoMaterial === 'SI' && !observacionMaterial.trim()) {
+      setFeedback(null)
+      setError('Debes completar observacion de dano material.')
+      return
+    }
+    if (danoPersona === 'SI' && !observacionPersona.trim()) {
+      setFeedback(null)
+      setError('Debes completar observacion de dano persona.')
+      return
+    }
+    if (novedadesTrabajo === 'SI' && !observacionNovedades.trim()) {
+      setFeedback(null)
+      setError('Debes completar observacion de novedades.')
+      return
+    }
+    cierreMutation.mutate()
+  }
+
+  if (!isTecnico) {
+    return (
+      <div className="bento-page">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          Este formulario es solo para tecnicos.
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -124,15 +191,8 @@ const TecnicoInicioJornadaPage = () => {
 
       <FormCard title="Datos generales" description={`ID Tecnico: ${estadoQuery.data?.idTecnico ?? usuario?.idUsuario ?? '-'}`}>
         <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Encargado (Supervisor)" error={!idEncargado && error ? 'Requerido' : undefined}>
-            <select className="input-base" value={idEncargado} onChange={(event) => setIdEncargado(event.target.value)}>
-              <option value="">Selecciona encargado</option>
-              {(encargadosQuery.data ?? []).map((item) => (
-                <option key={item.idEncargado} value={item.idEncargado}>
-                  {item.encargado} ({item.idEncargado})
-                </option>
-              ))}
-            </select>
+          <Field label="Encargado (Supervisor)">
+            <input className="input-base bg-slate-100" value="Asignado automaticamente por conformacion diaria" readOnly />
           </Field>
           <Field label="Fecha de vencimiento extintor">
             <input className="input-base" type="date" value={fechaVencimiento} onChange={(event) => setFechaVencimiento(event.target.value)} />
@@ -207,6 +267,64 @@ const TecnicoInicioJornadaPage = () => {
           </Button>
         </div>
       </FormCard>
+
+      {cierreEstadoQuery.data?.requiereCierre ? (
+        <FormCard title="Cierre de jornada" description="Completa este formulario para cerrar tu jornada del dia.">
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="Codigo cliente">
+              <input
+                className="input-base"
+                value={codigoCliente}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                maxLength={20}
+                onChange={(event) => setCodigoCliente(normalizeOnlyDigits(event.target.value))}
+              />
+            </Field>
+            <Field label="Ubicacion georeferenciada">
+              <input className="input-base" value={ubicacionGeoRef} onChange={(event) => setUbicacionGeoRef(event.target.value)} />
+            </Field>
+            <Field label="Dano material">
+              <select className="input-base" value={danoMaterial} onChange={(event) => setDanoMaterial(event.target.value as SiNo)}>
+                <option value="SI">SI</option>
+                <option value="NO">NO</option>
+              </select>
+            </Field>
+            <Field label="Dano persona">
+              <select className="input-base" value={danoPersona} onChange={(event) => setDanoPersona(event.target.value as SiNo)}>
+                <option value="SI">SI</option>
+                <option value="NO">NO</option>
+              </select>
+            </Field>
+            <Field label="Novedades de trabajo">
+              <select className="input-base" value={novedadesTrabajo} onChange={(event) => setNovedadesTrabajo(event.target.value as SiNo)}>
+                <option value="SI">SI</option>
+                <option value="NO">NO</option>
+              </select>
+            </Field>
+            {danoMaterial === 'SI' ? (
+              <Field label="Observacion dano material">
+                <input className="input-base" value={observacionMaterial} onChange={(event) => setObservacionMaterial(event.target.value)} />
+              </Field>
+            ) : null}
+            {danoPersona === 'SI' ? (
+              <Field label="Observacion dano persona">
+                <input className="input-base" value={observacionPersona} onChange={(event) => setObservacionPersona(event.target.value)} />
+              </Field>
+            ) : null}
+            {novedadesTrabajo === 'SI' ? (
+              <Field label="Observacion novedades">
+                <input className="input-base" value={observacionNovedades} onChange={(event) => setObservacionNovedades(event.target.value)} />
+              </Field>
+            ) : null}
+          </div>
+          <div className="mt-4">
+            <Button type="button" onClick={handleCerrarJornada} disabled={cierreMutation.isPending}>
+              {cierreMutation.isPending ? 'Guardando cierre...' : 'Registrar cierre de jornada'}
+            </Button>
+          </div>
+        </FormCard>
+      ) : null}
     </div>
   )
 }

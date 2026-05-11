@@ -6,8 +6,12 @@ import FormCard from '../components/common/FormCard'
 import Modal from '../components/common/Modal'
 import Table, { type Column } from '../components/common/Table'
 import {
+  aprobarInicioJornadaPendiente,
   createSupervision,
+  fetchIniciosJornadaConfirmadosHoySupervision,
   fetchSupervisionDetalle,
+  fetchIniciosJornadaPendientesSupervision,
+  rechazarInicioJornadaPendiente,
   fetchSupervisionTecnicos,
   fetchSupervisionTiposPenalizacion,
   fetchSupervisionTiposSupervision,
@@ -16,9 +20,11 @@ import {
 } from '../api/supervisionApi'
 import type {
   SupervisionCreatePayload,
+  SupervisionInicioPendiente,
   SupervisionRegistro,
 } from '../types/supervision'
 import { getApiErrorMessage } from '../services/httpClient'
+import { useAuth } from '../context/AuthContext'
 
 type SupervisionForm = {
   idTecnicoPrincipal: string
@@ -105,6 +111,9 @@ const photoFields: Array<{ key: keyof SupervisionForm; label: string }> = [
   { key: 'fotoObservacion3', label: 'Foto Observacion 3' },
   { key: 'fotoObservacion4', label: 'Foto Observacion 4' },
 ]
+const SUPERVISION_POR_OPTIONS = ['TIGO', 'MAKIRO'] as const
+const TECNOLOGIA_OPTIONS = ['DTH', 'HFC'] as const
+const TIPO_REVISION_OPTIONS = ['EXTERNA', 'INTERNA', 'Externa/Interna'] as const
 
 const normalizeId = (value?: string | number | null): string => String(value ?? '').trim()
 
@@ -136,6 +145,14 @@ const resolveImageSrc = (value?: string): string | null => {
   return `data:image/jpeg;base64,${raw}`
 }
 
+const resolveInicioImageSrc = (value?: string): string | null => {
+  const raw = value?.trim()
+  if (!raw) return null
+  if (raw.startsWith('data:image')) return raw
+  if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('/')) return raw
+  return `data:image/jpeg;base64,${raw}`
+}
+
 const toDataUrl = (file: File): Promise<string> => {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
@@ -146,6 +163,7 @@ const toDataUrl = (file: File): Promise<string> => {
 }
 
 const SupervisorSupervisionPage = () => {
+  const { usuario } = useAuth()
   const queryClient = useQueryClient()
   const [form, setForm] = useState<SupervisionForm>(emptyForm)
   const [filtroDraft, setFiltroDraft] = useState<SupervisionFiltro>(emptyFiltro)
@@ -155,11 +173,14 @@ const SupervisorSupervisionPage = () => {
   const [detalleId, setDetalleId] = useState<string>('')
   const [errorForm, setErrorForm] = useState<string | null>(null)
   const [successForm, setSuccessForm] = useState<string | null>(null)
+  const [vistaTopbar, setVistaTopbar] = useState<'supervisiones' | 'aprobacion'>('aprobacion')
+  const [ubicacionResolviendo, setUbicacionResolviendo] = useState(false)
 
   const tecnicosQuery = useQuery({
-    queryKey: ['supervision', 'tecnicos'],
-    queryFn: () => fetchSupervisionTecnicos({ limit: 1000 }),
+    queryKey: ['supervision', 'tecnicos', usuario?.idUsuario ?? 0],
+    queryFn: () => fetchSupervisionTecnicos({ limit: 2000 }),
     staleTime: 60_000,
+    enabled: Boolean(usuario?.idUsuario),
   })
 
   const tiposSupervisionQuery = useQuery({
@@ -196,6 +217,19 @@ const SupervisorSupervisionPage = () => {
     enabled: detalleModalOpen && Boolean(detalleId),
   })
 
+  const iniciosPendientesQuery = useQuery({
+    queryKey: ['supervision', 'jornada-pendiente-aprobacion', usuario?.idUsuario ?? 0],
+    queryFn: fetchIniciosJornadaPendientesSupervision,
+    refetchInterval: 20_000,
+    enabled: Boolean(usuario?.idUsuario),
+  })
+  const iniciosConfirmadosHoyQuery = useQuery({
+    queryKey: ['supervision', 'jornada-confirmada-hoy', usuario?.idUsuario ?? 0],
+    queryFn: fetchIniciosJornadaConfirmadosHoySupervision,
+    refetchInterval: 20_000,
+    enabled: Boolean(usuario?.idUsuario),
+  })
+
   const createMutation = useMutation({
     mutationFn: (payload: SupervisionCreatePayload) => createSupervision(payload),
     onSuccess: (result) => {
@@ -211,8 +245,82 @@ const SupervisorSupervisionPage = () => {
     },
   })
 
+  const aprobarInicioMutation = useMutation({
+    mutationFn: (idInicio: string) => aprobarInicioJornadaPendiente(idInicio),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supervision', 'jornada-pendiente-aprobacion'] })
+      queryClient.invalidateQueries({ queryKey: ['supervision', 'jornada-confirmada-hoy'] })
+    },
+  })
+
+  const rechazarInicioMutation = useMutation({
+    mutationFn: (idInicio: string) => rechazarInicioJornadaPendiente(idInicio),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['supervision', 'jornada-pendiente-aprobacion'] })
+      queryClient.invalidateQueries({ queryKey: ['supervision', 'jornada-confirmada-hoy'] })
+    },
+  })
+
   const tecnicos = tecnicosQuery.data ?? []
   const listados = listadoQuery.data ?? []
+  const iniciosPendientes = iniciosPendientesQuery.data ?? []
+  const iniciosConfirmadosHoy = iniciosConfirmadosHoyQuery.data ?? []
+
+  const pendientesColumns = useMemo<Column<SupervisionInicioPendiente>[]>(() => {
+    const resolveTecnicoNombre = (id?: string, nombre?: string): string => {
+      if (nombre?.trim()) return nombre.trim()
+      const match = tecnicos.find((item) => normalizeId(item.idTecnico) === normalizeId(id))
+      if (match?.tecnico?.trim()) return match.tecnico.trim()
+      return id || '-'
+    }
+
+    return [
+      { key: 'fechaRegistro', header: 'Fecha', render: (row) => formatDateTime(row.fechaRegistro) },
+      {
+        key: 'tecnicoNombre',
+        header: 'Tecnico',
+        render: (row) => resolveTecnicoNombre(row.idTecnico, row.tecnicoNombre),
+      },
+      {
+        key: 'auxiliarNombre',
+        header: 'Tecnico Auxiliar',
+        render: (row) => resolveTecnicoNombre(row.idAuxiliar, row.auxiliarNombre),
+      },
+      { key: 'estado', header: 'Estado', render: (row) => row.estado || (row.fechaCierre ? 'JORNADA FINALIZADA' : 'PENDIENTE') },
+      {
+        key: 'imagen',
+        header: 'Imagen inicio',
+        render: (row) => {
+          const src = resolveInicioImageSrc(row.imagen)
+          if (!src) return '-'
+          return <img src={src} alt="Inicio jornada" className="h-10 w-10 rounded-lg border border-slate-200 object-cover" />
+        },
+      },
+      {
+        key: 'acciones',
+        header: 'Acciones',
+        render: (row) => (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              onClick={() => aprobarInicioMutation.mutate(row.idInicio)}
+              disabled={aprobarInicioMutation.isPending || rechazarInicioMutation.isPending}
+            >
+              Aprobar
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={() => rechazarInicioMutation.mutate(row.idInicio)}
+              disabled={aprobarInicioMutation.isPending || rechazarInicioMutation.isPending}
+            >
+              Rechazar
+            </Button>
+          </div>
+        ),
+      },
+    ]
+  }, [aprobarInicioMutation, rechazarInicioMutation, tecnicos])
 
   const tecnicoMap = useMemo(() => {
     const map = new Map<string, (typeof tecnicos)[number]>()
@@ -242,6 +350,29 @@ const SupervisorSupervisionPage = () => {
   }, [form.idTecnicoPrincipal, tecnicoMap, tecnicos])
 
   const columns = useMemo<Column<SupervisionRegistro>[]>(() => {
+    const tipoSupervisionMap = new Map<string, string>(
+      (tiposSupervisionQuery.data ?? []).map((item) => [normalizeId(item.id), item.nombre])
+    )
+    const tipoTrabajoMap = new Map<string, string>(
+      (tiposTrabajoQuery.data ?? []).map((item) => [normalizeId(item.id), item.nombre])
+    )
+
+    const resolveTipoSupervision = (row: SupervisionRegistro): string => {
+      const id = normalizeId(row.idTipoSupervision)
+      const porCatalogo = id ? tipoSupervisionMap.get(id) : undefined
+      if (porCatalogo?.trim()) return porCatalogo.trim()
+      if (row.tipoSupervision?.trim() && row.tipoSupervision.trim() !== id) return row.tipoSupervision.trim()
+      return id || '-'
+    }
+
+    const resolveTipoTrabajo = (row: SupervisionRegistro): string => {
+      const id = normalizeId(row.idTipoTrabajo)
+      const porCatalogo = id ? tipoTrabajoMap.get(id) : undefined
+      if (porCatalogo?.trim()) return porCatalogo.trim()
+      if (row.tipoTrabajo?.trim() && row.tipoTrabajo.trim() !== id) return row.tipoTrabajo.trim()
+      return id || '-'
+    }
+
     return [
       { key: 'fechaRegistro', header: 'Fecha', render: (row) => formatDateTime(row.fechaRegistro) },
       {
@@ -254,8 +385,8 @@ const SupervisorSupervisionPage = () => {
         header: 'Tecnico Auxiliar',
         render: (row) => row.tecnicoAuxiliar || tecnicoMap.get(normalizeId(row.idTecnicoAuxiliar))?.tecnico || '-',
       },
-      { key: 'tipoSupervision', header: 'Tipo Supervision', render: (row) => row.tipoSupervision || '-' },
-      { key: 'tipoTrabajo', header: 'Tipo Trabajo', render: (row) => row.tipoTrabajo || '-' },
+      { key: 'tipoSupervision', header: 'Tipo Supervision', render: (row) => resolveTipoSupervision(row) },
+      { key: 'tipoTrabajo', header: 'Tipo Trabajo', render: (row) => resolveTipoTrabajo(row) },
       { key: 'codigo', header: 'Codigo', render: (row) => row.codigo || '-' },
       { key: 'ordenTrabajo', header: 'OT', render: (row) => row.ordenTrabajo || '-' },
       {
@@ -275,7 +406,7 @@ const SupervisorSupervisionPage = () => {
         ),
       },
     ]
-  }, [tecnicoMap])
+  }, [tecnicoMap, tiposSupervisionQuery.data, tiposTrabajoQuery.data])
 
   useEffect(() => {
     if (!form.idTecnicoAuxiliar) return
@@ -284,6 +415,11 @@ const SupervisorSupervisionPage = () => {
       setForm((prev) => ({ ...prev, idTecnicoAuxiliar: '' }))
     }
   }, [form.idTecnicoAuxiliar, tecnicosAuxiliar])
+
+  useEffect(() => {
+    if (!registroModalOpen) return
+    resolverUbicacionAltaPrecision()
+  }, [registroModalOpen])
 
   const handlePhotoChange = async (field: keyof SupervisionForm, event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -294,6 +430,40 @@ const SupervisorSupervisionPage = () => {
     } catch {
       setErrorForm('No se pudo cargar una imagen seleccionada.')
     }
+  }
+
+  const normalizeOnlyDigits = (value: string): string => value.replace(/\D+/g, '')
+
+  const resolverUbicacionAltaPrecision = () => {
+    if (!navigator.geolocation) {
+      setErrorForm('Tu navegador no soporta geolocalizacion.')
+      return
+    }
+    setUbicacionResolviendo(true)
+    setErrorForm(null)
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const lat = position.coords.latitude
+        const lng = position.coords.longitude
+        const acc = position.coords.accuracy
+        setForm((prev) => ({ ...prev, ubicacion: `${lat.toFixed(7)},${lng.toFixed(7)} (±${Math.round(acc)}m)` }))
+        setUbicacionResolviendo(false)
+      },
+      (error) => {
+        const msg = error.code === 1
+          ? 'Permiso de ubicacion denegado.'
+          : error.code === 2
+            ? 'No se pudo determinar tu ubicacion.'
+            : 'Tiempo de espera agotado al obtener ubicacion.'
+        setErrorForm(msg)
+        setUbicacionResolviendo(false)
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 0,
+      }
+    )
   }
 
   const validateForm = (): string | null => {
@@ -352,61 +522,131 @@ const SupervisorSupervisionPage = () => {
         <p className="text-sm text-slate-500">Registro manual de notas de supervision para supervisor.</p>
       </div>
 
-      <FormCard
-        title="Filtros"
-        description="Filtra notas por rango de fechas."
-        actions={
-          <>
-            <Button type="button" onClick={() => setRegistroModalOpen(true)}>
-              Nueva supervision
-            </Button>
-            <Button type="button" variant="secondary" onClick={() => { setFiltroDraft(emptyFiltro()); setFiltroActivo(emptyFiltro()) }}>
-              Limpiar
-            </Button>
-            <Button type="button" onClick={() => setFiltroActivo(filtroDraft)}>
-              Buscar
-            </Button>
-          </>
-        }
-      >
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Fecha desde">
-            <input
-              className="input-base"
-              type="date"
-              value={filtroDraft.fechaDesde}
-              onChange={(event) => setFiltroDraft((prev) => ({ ...prev, fechaDesde: event.target.value }))}
-            />
-          </Field>
-          <Field label="Fecha hasta">
-            <input
-              className="input-base"
-              type="date"
-              value={filtroDraft.fechaHasta}
-              onChange={(event) => setFiltroDraft((prev) => ({ ...prev, fechaHasta: event.target.value }))}
-            />
-          </Field>
-        </div>
-      </FormCard>
+      <div className="flex flex-wrap gap-3">
+        <Button type="button" variant={vistaTopbar === 'supervisiones' ? 'primary' : 'secondary'} onClick={() => setVistaTopbar('supervisiones')}>
+          Supervisiones
+        </Button>
+        <Button type="button" variant={vistaTopbar === 'aprobacion' ? 'primary' : 'secondary'} onClick={() => setVistaTopbar('aprobacion')}>
+          Aprobacion de jornada
+        </Button>
+      </div>
 
-      {successForm ? (
-        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{successForm}</div>
-      ) : null}
+      {vistaTopbar === 'aprobacion' ? (
+        <>
+          <FormCard
+            title="Confirmadas hoy"
+            description={`Total confirmadas hoy: ${iniciosConfirmadosHoy.length}`}
+            actions={
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => iniciosConfirmadosHoyQuery.refetch()}
+                disabled={iniciosConfirmadosHoyQuery.isFetching}
+              >
+                Recargar confirmadas
+              </Button>
+            }
+          >
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3">
+              <Table
+                columns={pendientesColumns.filter((col) => col.key !== 'acciones')}
+                data={iniciosConfirmadosHoy}
+                stickyHeader
+                desktopMinWidthClass="min-w-[700px]"
+                emptyLabel={iniciosConfirmadosHoyQuery.isLoading ? 'Cargando confirmadas...' : 'Sin confirmadas hoy.'}
+              />
+            </div>
+          </FormCard>
 
-      <FormCard title="Notas registradas" description={`Total: ${listados.length}`}>
-        {listadoQuery.isError ? (
-          <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-            {getApiErrorMessage(listadoQuery.error, 'No se pudo cargar las notas de supervision.')}
-          </div>
-        ) : null}
-        <Table
-          columns={columns}
-          data={listados}
-          stickyHeader
-          desktopMinWidthClass="min-w-[920px]"
-          emptyLabel={listadoQuery.isLoading ? 'Cargando notas...' : 'Sin notas de supervision.'}
-        />
-      </FormCard>
+          <FormCard
+            title="Pendientes de aprobacion"
+            description={`Pendientes: ${iniciosPendientes.length}. El tecnico no podra cerrar jornada hasta aprobar.`}
+            actions={
+              <Button
+                type="button"
+                variant="secondary"
+                onClick={() => iniciosPendientesQuery.refetch()}
+                disabled={iniciosPendientesQuery.isFetching}
+              >
+                Recargar pendientes
+              </Button>
+            }
+          >
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+              {iniciosPendientesQuery.isError ? (
+                <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                  {getApiErrorMessage(iniciosPendientesQuery.error, 'No se pudo cargar pendientes de jornada.')}
+                </div>
+              ) : null}
+              <Table
+                columns={pendientesColumns}
+                data={iniciosPendientes}
+                stickyHeader
+                desktopMinWidthClass="min-w-[760px]"
+                emptyLabel={iniciosPendientesQuery.isLoading ? 'Cargando pendientes...' : 'Sin inicios pendientes de aprobacion.'}
+              />
+            </div>
+          </FormCard>
+        </>
+      ) : (
+        <>
+          <FormCard
+            title="Filtros"
+            description="Filtra notas por rango de fechas."
+            actions={
+              <>
+                <Button type="button" onClick={() => setRegistroModalOpen(true)}>
+                  Nueva supervision
+                </Button>
+                <Button type="button" variant="secondary" onClick={() => { setFiltroDraft(emptyFiltro()); setFiltroActivo(emptyFiltro()) }}>
+                  Limpiar
+                </Button>
+                <Button type="button" onClick={() => setFiltroActivo(filtroDraft)}>
+                  Buscar
+                </Button>
+              </>
+            }
+          >
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field label="Fecha desde">
+                <input
+                  className="input-base"
+                  type="date"
+                  value={filtroDraft.fechaDesde}
+                  onChange={(event) => setFiltroDraft((prev) => ({ ...prev, fechaDesde: event.target.value }))}
+                />
+              </Field>
+              <Field label="Fecha hasta">
+                <input
+                  className="input-base"
+                  type="date"
+                  value={filtroDraft.fechaHasta}
+                  onChange={(event) => setFiltroDraft((prev) => ({ ...prev, fechaHasta: event.target.value }))}
+                />
+              </Field>
+            </div>
+          </FormCard>
+
+          {successForm ? (
+            <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{successForm}</div>
+          ) : null}
+
+          <FormCard title="Notas registradas" description={`Total: ${listados.length}`}>
+            {listadoQuery.isError ? (
+              <div className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                {getApiErrorMessage(listadoQuery.error, 'No se pudo cargar las notas de supervision.')}
+              </div>
+            ) : null}
+            <Table
+              columns={columns}
+              data={listados}
+              stickyHeader
+              desktopMinWidthClass="min-w-[920px]"
+              emptyLabel={listadoQuery.isLoading ? 'Cargando notas...' : 'Sin notas de supervision.'}
+            />
+          </FormCard>
+        </>
+      )}
 
       <Modal
         open={registroModalOpen}
@@ -499,23 +739,57 @@ const SupervisorSupervisionPage = () => {
             </select>
           </Field>
           <Field label="Supervision por (Obligatorio)">
-            <input className="input-base" value={form.supervisionPor} onChange={(e) => setForm((p) => ({ ...p, supervisionPor: e.target.value }))} />
+            <select className="input-base" value={form.supervisionPor} onChange={(e) => setForm((p) => ({ ...p, supervisionPor: e.target.value }))}>
+              <option value="">Selecciona supervision</option>
+              {SUPERVISION_POR_OPTIONS.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
           </Field>
           <Field label="Tecnologia (Obligatorio)">
-            <input className="input-base" value={form.tecnologia} onChange={(e) => setForm((p) => ({ ...p, tecnologia: e.target.value }))} />
+            <select className="input-base" value={form.tecnologia} onChange={(e) => setForm((p) => ({ ...p, tecnologia: e.target.value }))}>
+              <option value="">Selecciona tecnologia</option>
+              {TECNOLOGIA_OPTIONS.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
           </Field>
           <Field label="Codigo (Obligatorio)">
-            <input className="input-base" value={form.codigo} onChange={(e) => setForm((p) => ({ ...p, codigo: e.target.value }))} />
+            <input
+              className="input-base"
+              value={form.codigo}
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={20}
+              onChange={(e) => setForm((p) => ({ ...p, codigo: normalizeOnlyDigits(e.target.value) }))}
+            />
           </Field>
           <Field label="Orden de trabajo (Obligatorio)">
-            <input className="input-base" value={form.ordenTrabajo} onChange={(e) => setForm((p) => ({ ...p, ordenTrabajo: e.target.value }))} />
+            <input
+              className="input-base"
+              value={form.ordenTrabajo}
+              inputMode="numeric"
+              pattern="[0-9]*"
+              maxLength={20}
+              onChange={(e) => setForm((p) => ({ ...p, ordenTrabajo: normalizeOnlyDigits(e.target.value) }))}
+            />
           </Field>
           <Field label="Tipo revision (Obligatorio)">
-            <input className="input-base" value={form.tipoRevision} onChange={(e) => setForm((p) => ({ ...p, tipoRevision: e.target.value }))} />
+            <select className="input-base" value={form.tipoRevision} onChange={(e) => setForm((p) => ({ ...p, tipoRevision: e.target.value }))}>
+              <option value="">Selecciona tipo revision</option>
+              {TIPO_REVISION_OPTIONS.map((item) => (
+                <option key={item} value={item}>{item}</option>
+              ))}
+            </select>
           </Field>
           <div className="md:col-span-2">
             <Field label="Ubicacion (Obligatorio)">
-              <input className="input-base" value={form.ubicacion} onChange={(e) => setForm((p) => ({ ...p, ubicacion: e.target.value }))} />
+              <div className="space-y-2">
+                <input className="input-base bg-slate-100" value={form.ubicacion} readOnly />
+                <Button type="button" variant="secondary" onClick={resolverUbicacionAltaPrecision} disabled={ubicacionResolviendo}>
+                  {ubicacionResolviendo ? 'Obteniendo ubicacion...' : 'Actualizar ubicacion exacta'}
+                </Button>
+              </div>
             </Field>
           </div>
           <Field label="Observacion">

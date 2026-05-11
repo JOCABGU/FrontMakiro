@@ -4,6 +4,7 @@ import type {
   SupervisionCatalogoItem,
   SupervisionCreatePayload,
   SupervisionCreateResult,
+  SupervisionInicioPendiente,
   SupervisionListParams,
   SupervisionRegistro,
   SupervisionTecnico,
@@ -28,11 +29,11 @@ const readValue = (row: Record<string, unknown>, keys: string[]): unknown => {
   const normalizedMap = new Map<string, unknown>()
   for (const [key, value] of Object.entries(row)) {
     if (value === undefined || value === null || value === '') continue
-    normalizedMap.set(key.replace(/_/g, '').toLowerCase(), value)
+    normalizedMap.set(key.replace(/[_\s]/g, '').toLowerCase(), value)
   }
 
   for (const key of keys) {
-    const value = normalizedMap.get(key.replace(/_/g, '').toLowerCase())
+    const value = normalizedMap.get(key.replace(/[_\s]/g, '').toLowerCase())
     if (value !== undefined && value !== null && value !== '') return value
   }
 
@@ -67,6 +68,8 @@ const mapCatalogo = (row: Record<string, unknown>, idKeys: string[], nombreKeys:
 }
 
 const mapRegistro = (row: Record<string, unknown>): SupervisionRegistro => {
+  const idTipoSupervision = normalizeString(readValue(row, ['idTipoSupervision', 'id_tipo_supervision', 'Id_TipoSupervision'])) || undefined
+  const idTipoTrabajo = normalizeString(readValue(row, ['idTipoTrabajo', 'id_tipo_trabajo', 'Id_TipoTrabajo'])) || undefined
   return {
     idSupervision: normalizeString(readValue(row, ['idSupervision', 'id_supervision', 'idsupervision', 'Id_Supervision'])),
     fechaRegistro: normalizeString(readValue(row, ['fechaRegistro', 'fecha_registro', 'FechaRegistro'])) || undefined,
@@ -76,10 +79,10 @@ const mapRegistro = (row: Record<string, unknown>): SupervisionRegistro => {
     tecnicoPrincipal: normalizeString(readValue(row, ['tecnicoPrincipal', 'nombreTecnicoPrincipal'])) || undefined,
     idTecnicoAuxiliar: normalizeString(readValue(row, ['idTecnicoAuxiliar', 'id_tecnico_auxiliar', 'Id_TecnicoAuxiliar'])) || undefined,
     tecnicoAuxiliar: normalizeString(readValue(row, ['tecnicoAuxiliar', 'nombreTecnicoAuxiliar'])) || undefined,
-    idTipoSupervision: normalizeString(readValue(row, ['idTipoSupervision', 'id_tipo_supervision', 'Id_TipoSupervision'])) || undefined,
-    tipoSupervision: normalizeString(readValue(row, ['tipoSupervision', 'TipoSupervision'])) || undefined,
-    idTipoTrabajo: normalizeString(readValue(row, ['idTipoTrabajo', 'id_tipo_trabajo', 'Id_TipoTrabajo'])) || undefined,
-    tipoTrabajo: normalizeString(readValue(row, ['tipoTrabajo', 'TipoTrabajo'])) || undefined,
+    idTipoSupervision,
+    tipoSupervision: normalizeString(readValue(row, ['tipoSupervision', 'TipoSupervision'])) || idTipoSupervision || undefined,
+    idTipoTrabajo,
+    tipoTrabajo: normalizeString(readValue(row, ['tipoTrabajo', 'TipoTrabajo'])) || idTipoTrabajo || undefined,
     idTipoPenalizacion: normalizeString(readValue(row, ['idTipoPenalizacion', 'id_tipo_penalizacion', 'Id_TipoPenalizacion'])) || undefined,
     tipoPenalizacion: normalizeString(readValue(row, ['tipoPenalizacion', 'TipoPenalizacion'])) || undefined,
     supervisionPor: normalizeString(readValue(row, ['supervisionPor', 'supervision_por', 'Supervision_Por'])) || undefined,
@@ -124,7 +127,7 @@ const sanitizeTecnicosParams = (params?: SupervisionTecnicosParams): Record<stri
 }
 
 export const fetchSupervisionTecnicos = async (params?: SupervisionTecnicosParams): Promise<SupervisionTecnico[]> => {
-  const { data } = await api.get('/supervisor/conformacion-cuadrilla-web/catalogos/tecnicos', {
+  const { data } = await api.get(`${SUPERVISION_BASE_PATH}/catalogos/tecnicos`, {
     params: sanitizeTecnicosParams(params),
   })
   const rows = normalizeArrayResponse<Record<string, unknown>>(data)
@@ -172,4 +175,37 @@ export const createSupervision = async (payload: SupervisionCreatePayload): Prom
     headers: { 'Content-Type': 'application/json' },
   })
   return normalizeObjectResponse<SupervisionCreateResult>(data)
+}
+
+const mapInicioPendiente = (row: Record<string, unknown>): SupervisionInicioPendiente => ({
+  idInicio: normalizeString(readValue(row, ['idInicio', 'id_inicio'])),
+  idTecnico: normalizeString(readValue(row, ['idTecnico', 'id_tecnico'])) || undefined,
+  tecnicoNombre: normalizeString(readValue(row, ['tecnicoNombre', 'tecnico', 'nombreTecnico'])) || undefined,
+  idAuxiliar: normalizeString(readValue(row, ['idAuxiliar', 'id_auxiliar'])) || undefined,
+  auxiliarNombre: normalizeString(readValue(row, ['auxiliarNombre', 'auxiliar', 'nombreAuxiliar'])) || undefined,
+  idSupervisor: normalizeString(readValue(row, ['idSupervisor', 'id_supervisor', 'id_encargado'])) || undefined,
+  fechaRegistro: normalizeString(readValue(row, ['fechaRegistro', 'fecha_registro'])) || undefined,
+  fechaCierre: normalizeString(readValue(row, ['fechaCierre', 'fecha_cierre'])) || undefined,
+  imagen: normalizeString(readValue(row, ['imagen', 'Imagen'])) || undefined,
+  estado: normalizeString(readValue(row, ['estado', 'Estado'])) || undefined,
+})
+
+export const fetchIniciosJornadaPendientesSupervision = async (): Promise<SupervisionInicioPendiente[]> => {
+  const { data } = await api.get(`${SUPERVISION_BASE_PATH}/jornadas/pendientes`)
+  const rows = normalizeArrayResponse<Record<string, unknown>>(data)
+  return rows.map(mapInicioPendiente).filter((item) => item.idInicio)
+}
+
+export const fetchIniciosJornadaConfirmadosHoySupervision = async (): Promise<SupervisionInicioPendiente[]> => {
+  const { data } = await api.get(`${SUPERVISION_BASE_PATH}/jornadas/confirmadas-hoy`)
+  const rows = normalizeArrayResponse<Record<string, unknown>>(data)
+  return rows.map(mapInicioPendiente).filter((item) => item.idInicio)
+}
+
+export const aprobarInicioJornadaPendiente = async (idInicio: string): Promise<void> => {
+  await api.post(`${SUPERVISION_BASE_PATH}/jornadas/${idInicio}/aprobar`)
+}
+
+export const rechazarInicioJornadaPendiente = async (idInicio: string): Promise<void> => {
+  await api.post(`${SUPERVISION_BASE_PATH}/jornadas/${idInicio}/rechazar`)
 }

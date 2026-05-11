@@ -7,8 +7,8 @@ interface ModalProps {
   children: ReactNode
   onClose: () => void
   actions?: ReactNode
-  maxWidthClass?: string
   containerClassName?: string
+  maxWidthClass?: string
   contentClassName?: string
 }
 
@@ -18,9 +18,9 @@ const Modal = ({
   children,
   onClose,
   actions,
-  maxWidthClass,
   containerClassName,
-  contentClassName,
+  maxWidthClass,
+  contentClassName
 }: ModalProps) => {
   useEffect(() => {
     if (!open || typeof document === 'undefined') return
@@ -45,14 +45,16 @@ const Modal = ({
   return createPortal(
     <div className="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/45 backdrop-blur-sm">
       <div className="flex min-h-full items-start justify-center p-4 sm:items-center sm:p-6">
-        <div className={`bento-modal max-h-[calc(100dvh-2rem)] overflow-auto ${containerClassName ?? maxWidthClass ?? 'max-w-lg'}`}>
+        <div
+          className={`bento-modal max-h-[calc(100dvh-2rem)] overflow-auto ${containerClassName ?? maxWidthClass ?? 'max-w-lg'}`}
+        >
           <div className="flex items-center justify-between">
             <h3 className="text-lg font-semibold text-slate-900">{title}</h3>
             <button className="text-slate-400 transition hover:text-slate-700" onClick={onClose} type="button">
               x
             </button>
           </div>
-          <div className={`mt-4 text-sm text-slate-600 ${contentClassName ?? ''}`}>{children}</div>
+          <div className={`mt-4 text-sm text-slate-600 ${contentClassName ?? ''}`.trim()}>{children}</div>
           {actions ? <div className="mt-6 flex justify-end gap-3">{actions}</div> : null}
         </div>
       </div>

@@ -61,26 +61,60 @@ const LoginPage = () => {
   }
 
   return (
-    <div className="min-h-screen px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-6xl items-center">
+    <div className="relative min-h-screen overflow-hidden bg-slate-100 px-4 py-6 sm:px-6 lg:px-8">
+      <div className="pointer-events-none absolute inset-0">
+        <div className="absolute -top-32 -left-16 h-72 w-72 rounded-full bg-sky-300/35 blur-3xl" />
+        <div className="absolute top-1/3 -right-24 h-80 w-80 rounded-full bg-blue-400/25 blur-3xl" />
+        <div className="absolute -bottom-20 left-1/3 h-72 w-72 rounded-full bg-cyan-300/25 blur-3xl" />
+      </div>
+
+      <div className="relative mx-auto flex min-h-[calc(100vh-3rem)] max-w-6xl items-center">
         <div className="grid w-full gap-6 lg:grid-cols-12">
-          <div className="glass-panel p-8 lg:col-span-7">
-            <h1 className="text-3xl font-semibold text-slate-900">Bienvenido a TigoStar</h1>
-            <p className="mt-3 text-sm text-slate-600">
+          <div className="glass-panel relative overflow-hidden p-8 lg:col-span-7 lg:p-10">
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-sky-400 via-blue-600 to-cyan-400" />
+            <span className="hidden items-center rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold uppercase tracking-[0.12em] text-blue-700 sm:inline-flex">
+              Plataforma de Operaciones
+            </span>
+            <h1 className="mt-1 text-3xl font-semibold leading-tight text-slate-900 sm:mt-4 lg:text-4xl">
+              <span className="sm:hidden">Bienvenido a Tigo Star</span>
+              <span className="hidden sm:inline">Bienvenido a TigoStar</span>
+            </h1>
+            <p className="mt-3 hidden max-w-xl text-sm text-slate-600 lg:text-base sm:block">
               Controla ordenes de trabajo, materiales y cargos de usuario en un solo lugar.
             </p>
-            <div className="mt-6 grid gap-4 text-sm text-slate-600 md:grid-cols-2">
-              <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm">
-                <p className="font-semibold text-slate-800">Acceso seguro</p>
-                <p className="mt-2">La sesion se gestiona con token y expiracion automatica.</p>
+
+            <div className="mt-7 hidden gap-4 md:grid-cols-2 sm:grid">
+              <div className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">Acceso seguro</p>
+                <p className="mt-2 text-sm text-slate-600">La sesion se gestiona con token y expiracion automatica.</p>
               </div>
-              <div className="rounded-2xl border border-slate-200/80 bg-white/90 p-4 shadow-sm">
-                <p className="font-semibold text-slate-800">Modulos integrados</p>
-                <p className="mt-2">OT realizadas, ajustes y cargos no realizados listos para operar.</p>
+              <div className="rounded-2xl border border-slate-200/80 bg-gradient-to-br from-white to-slate-50 p-4 shadow-sm">
+                <p className="text-sm font-semibold text-slate-800">Modulos integrados</p>
+                <p className="mt-2 text-sm text-slate-600">OT, supervision, cuadrillas y llamadas de atencion.</p>
+              </div>
+            </div>
+
+            <div className="mt-6 hidden gap-3 sm:grid-cols-3 sm:grid">
+              <div className="rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-center">
+                <p className="text-xl font-semibold text-slate-900">24/7</p>
+                <p className="text-xs text-slate-500">Disponibilidad</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-center">
+                <p className="text-xl font-semibold text-slate-900">1</p>
+                <p className="text-xs text-slate-500">Panel centralizado</p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-white/90 px-4 py-3 text-center">
+                <p className="text-xl font-semibold text-slate-900">100%</p>
+                <p className="text-xs text-slate-500">Flujo operativo</p>
               </div>
             </div>
           </div>
-          <form onSubmit={handleSubmit} className="glass-panel flex flex-col gap-5 p-8 lg:col-span-5">
+
+          <form
+            onSubmit={handleSubmit}
+            className="glass-panel relative flex flex-col gap-5 p-7 sm:p-8 lg:col-span-5 lg:p-9"
+          >
+            <div className="pointer-events-none absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-blue-500 via-brand-600 to-cyan-500" />
             <div>
               <h2 className="text-2xl font-semibold text-slate-900">Iniciar sesion</h2>
               <p className="text-sm text-slate-500">Ingresa con tu usuario corporativo.</p>
@@ -112,7 +146,7 @@ const LoginPage = () => {
                 className="input-base"
                 value={usuario}
                 onChange={(event) => setUsuario(event.target.value)}
-                placeholder="Usuario"
+                placeholder="Ej: central"
                 disabled={mutation.isPending}
               />
             </Field>
@@ -157,9 +191,13 @@ const LoginPage = () => {
               </div>
             </Field>
             {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-600">{error}</div> : null}
-            <Button type="submit" disabled={mutation.isPending} className="w-full">
+            <Button type="submit" disabled={mutation.isPending} className="mt-1 w-full">
               {mutation.isPending ? 'Validando...' : 'Ingresar'}
             </Button>
+
+            <p className="text-center text-xs text-slate-500">
+              Acceso restringido a personal autorizado.
+            </p>
           </form>
         </div>
       </div>

@@ -26,6 +26,7 @@ export type LlamadaAtencionRegistro = {
   descripcion?: string
   comentarioColaborador?: string
   acuerdos?: string
+  testigo?: string
   fechaSeguimiento?: string
   firmaTecnico?: string
   firmaTestigo?: string
@@ -52,6 +53,7 @@ export type LlamadaAtencionCreatePayload = {
   descripcion?: string
   comentarioColaborador?: string
   acuerdos?: string
+  testigo: string
   fechaSeguimiento?: string
   firmaTecnico?: string
   firmaTestigo?: string

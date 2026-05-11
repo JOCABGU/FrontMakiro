@@ -89,3 +89,16 @@ export type SupervisionCreateResult = {
   idSupervision: string
   idUsuarioSesion?: number
 }
+
+export type SupervisionInicioPendiente = {
+  idInicio: string
+  idTecnico?: string
+  tecnicoNombre?: string
+  idAuxiliar?: string
+  auxiliarNombre?: string
+  idSupervisor?: string
+  fechaRegistro?: string
+  fechaCierre?: string
+  imagen?: string
+  estado?: string
+}

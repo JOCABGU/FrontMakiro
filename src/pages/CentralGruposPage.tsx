@@ -8,13 +8,12 @@ import {
   asignarCentralSupervisor,
   asignarCentralTecnico,
   cambiarColaboradorBackupCentral,
+  cambiarSupervisorMasivoCentral,
   crearCentralGrupo,
-  eliminarCentralGrupo,
   fetchCentralGrupos,
   fetchCentralSupervisores,
   fetchCentralTecnicos,
   marcarSupervisorAusenteCentral,
-  quitarCentralTecnico,
   restaurarSupervisorCentral,
 } from '../api/centralGruposApi'
 import { useAuth } from '../context/AuthContext'
@@ -35,16 +34,19 @@ const CentralGruposPage = () => {
   const [openSupervisorModal, setOpenSupervisorModal] = useState(false)
   const [openTecnicoModal, setOpenTecnicoModal] = useState(false)
   const [openBackupModal, setOpenBackupModal] = useState(false)
-  const [openEditarModal, setOpenEditarModal] = useState(false)
-  const [idGrupoEditando, setIdGrupoEditando] = useState('')
+  const [openCambioSupervisorModal, setOpenCambioSupervisorModal] = useState(false)
   const [idGrupoBackup, setIdGrupoBackup] = useState('')
   const [idTecnicoBackup, setIdTecnicoBackup] = useState('')
+  const [supervisoresExpandido, setSupervisoresExpandido] = useState<string[]>([])
+  const [idSupervisorOrigen, setIdSupervisorOrigen] = useState('')
+  const [idSupervisorDestino, setIdSupervisorDestino] = useState('')
+  const [modoCambioSupervisor, setModoCambioSupervisor] = useState<'todos' | 'especificos'>('todos')
+  const [gruposSeleccionadosCambio, setGruposSeleccionadosCambio] = useState<string[]>([])
+  const [supervisorEdicionNombre, setSupervisorEdicionNombre] = useState('')
   const [backupMode, setBackupMode] = useState<'ausente' | 'cambiar'>('ausente')
 
   const [feedback, setFeedback] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [idGrupoEliminando, setIdGrupoEliminando] = useState<string | null>(null)
-  const [quitandoTecnicoKey, setQuitandoTecnicoKey] = useState<string | null>(null)
 
   const isCentral = roleName.trim().toLowerCase() === 'central'
 
@@ -139,25 +141,6 @@ const CentralGruposPage = () => {
     },
   })
 
-  const eliminarGrupoMutation = useMutation({
-    mutationFn: (grupoId: string) =>
-      eliminarCentralGrupo({
-        idGrupo: Number(grupoId),
-        sucursal: loginSucursal,
-      }),
-    onSuccess: () => {
-      setError(null)
-      setFeedback('Grupo eliminado correctamente.')
-      queryClient.invalidateQueries({ queryKey: ['central-grupos', 'listado'] })
-    },
-    onError: (err) => {
-      setFeedback(null)
-      setError(getApiErrorMessage(err, 'No se pudo eliminar el grupo.'))
-    },
-    onSettled: () => {
-      setIdGrupoEliminando(null)
-    },
-  })
 
   const marcarAusenteMutation = useMutation({
     mutationFn: () =>
@@ -218,24 +201,45 @@ const CentralGruposPage = () => {
     },
   })
 
-  const quitarTecnicoMutation = useMutation({
-    mutationFn: ({ idGrupo, idUsuarioTecnico }: { idGrupo: string; idUsuarioTecnico: string }) =>
-      quitarCentralTecnico({
-        idGrupo: Number(idGrupo),
-        idUsuarioTecnico: Number(idUsuarioTecnico),
+
+  const cambiarSupervisorMasivoMutation = useMutation({
+    mutationFn: async () => {
+      const origen = supervisores.find((s) => s.idUsuarioSupervisor === idSupervisorOrigen)
+      const destino = supervisores.find((s) => s.idUsuarioSupervisor === idSupervisorDestino)
+      if (!origen || !destino) {
+        throw new Error('Selecciona supervisor origen y supervisor destino.')
+      }
+      const gruposOrigen = grupos.filter((g) => (g.supervisor || '').trim().toLowerCase() === origen.supervisorACargo.trim().toLowerCase())
+      const targetIds =
+        modoCambioSupervisor === 'todos'
+          ? gruposOrigen.map((g) => g.idGrupo)
+          : gruposSeleccionadosCambio.filter((id) => gruposOrigen.some((g) => g.idGrupo === id))
+
+      if (targetIds.length === 0) {
+        throw new Error('No hay grupos para transferir.')
+      }
+      const result = await cambiarSupervisorMasivoCentral({
+        idSupervisorOrigen: Number(origen.idUsuarioSupervisor),
+        idSupervisorDestino: Number(destino.idUsuarioSupervisor),
+        idGrupos: modoCambioSupervisor === 'todos' ? [] : targetIds.map((id) => Number(id)),
         sucursal: loginSucursal,
-      }),
-    onSuccess: () => {
+      })
+      return { total: Number(result.actualizados ?? targetIds.length) }
+    },
+    onSuccess: (result) => {
+      setOpenCambioSupervisorModal(false)
+      setSupervisorEdicionNombre('')
+      setIdSupervisorOrigen('')
+      setIdSupervisorDestino('')
+      setModoCambioSupervisor('todos')
+      setGruposSeleccionadosCambio([])
       setError(null)
-      setFeedback('Tecnico quitado del grupo correctamente.')
+      setFeedback(`Supervisor actualizado en ${result.total} grupo(s).`)
       queryClient.invalidateQueries({ queryKey: ['central-grupos', 'listado'] })
     },
     onError: (err) => {
       setFeedback(null)
-      setError(getApiErrorMessage(err, 'No se pudo quitar tecnico del grupo.'))
-    },
-    onSettled: () => {
-      setQuitandoTecnicoKey(null)
+      setError(getApiErrorMessage(err, 'No se pudo cambiar supervisor en los grupos seleccionados.'))
     },
   })
 
@@ -263,7 +267,26 @@ const CentralGruposPage = () => {
   )
 
   const grupoBackupSeleccionado = useMemo(() => grupos.find((g) => g.idGrupo === idGrupoBackup), [grupos, idGrupoBackup])
-  const grupoEditando = useMemo(() => grupos.find((g) => g.idGrupo === idGrupoEditando), [grupos, idGrupoEditando])
+  const gruposPorSupervisor = useMemo(() => {
+    const map = new Map<string, { supervisor: string; grupos: typeof grupos }>()
+    for (const grupo of grupos) {
+      const supervisor = (grupo.supervisor || 'Sin supervisor').trim() || 'Sin supervisor'
+      const key = supervisor.toLowerCase()
+      const current = map.get(key)
+      if (!current) {
+        map.set(key, { supervisor, grupos: [grupo] })
+      } else {
+        current.grupos.push(grupo)
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => a.supervisor.localeCompare(b.supervisor, 'es', { sensitivity: 'base' }))
+  }, [grupos])
+
+  const gruposSupervisorOrigen = useMemo(() => {
+    const origen = supervisores.find((s) => s.idUsuarioSupervisor === idSupervisorOrigen)
+    if (!origen) return []
+    return grupos.filter((g) => (g.supervisor || '').trim().toLowerCase() === origen.supervisorACargo.trim().toLowerCase())
+  }, [grupos, supervisores, idSupervisorOrigen])
 
   const handleCrearGrupo = () => {
     if (!nombreGrupo.trim()) {
@@ -303,19 +326,6 @@ const CentralGruposPage = () => {
     asignarTecnicoMutation.mutate()
   }
 
-  const handleEliminarGrupo = (idGrupo: string, nombreGrupo: string) => {
-    const ok = window.confirm(`Se marcara como eliminado el grupo "${nombreGrupo}". Deseas continuar?`)
-    if (!ok) return
-    setIdGrupoEliminando(idGrupo)
-    eliminarGrupoMutation.mutate(idGrupo)
-  }
-
-  const handleAbrirSupervisorAusente = (idGrupo: string) => {
-    setBackupMode('ausente')
-    setIdGrupoBackup(idGrupo)
-    setIdTecnicoBackup('')
-    setOpenBackupModal(true)
-  }
 
   const handleAbrirCambiarColaborador = (idGrupo: string) => {
     setBackupMode('cambiar')
@@ -343,26 +353,28 @@ const CentralGruposPage = () => {
     restaurarSupervisorMutation.mutate(idGrupo)
   }
 
-  const handleQuitarTecnico = (idGrupo: string, idUsuarioTecnico: string, tecnicoNombre: string) => {
-    const ok = window.confirm(`Se quitara al tecnico "${tecnicoNombre}" del grupo. Deseas continuar?`)
-    if (!ok) return
-    setQuitandoTecnicoKey(`${idGrupo}-${idUsuarioTecnico}`)
-    quitarTecnicoMutation.mutate({ idGrupo, idUsuarioTecnico })
+
+  const toggleGrupoCambio = (idGrupo: string) => {
+    setGruposSeleccionadosCambio((current) =>
+      current.includes(idGrupo) ? current.filter((id) => id !== idGrupo) : [...current, idGrupo]
+    )
   }
 
-  const abrirAsignarTecnicoGrupo = (idGrupo: string) => {
-    setIdGrupoTecnico(idGrupo)
-    setOpenTecnicoModal(true)
+  const toggleSupervisorExpandido = (supervisor: string) => {
+    const key = supervisor.trim().toLowerCase()
+    setSupervisoresExpandido((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    )
   }
 
-  const abrirCambiarSupervisorGrupo = (idGrupo: string) => {
-    setIdGrupoSupervisor(idGrupo)
-    setOpenSupervisorModal(true)
-  }
-
-  const abrirEditarGrupo = (idGrupo: string) => {
-    setIdGrupoEditando(idGrupo)
-    setOpenEditarModal(true)
+  const abrirEditarSupervisor = (supervisor: string) => {
+    const found = supervisores.find((s) => s.supervisorACargo.trim().toLowerCase() === supervisor.trim().toLowerCase())
+    setSupervisorEdicionNombre(supervisor)
+    setIdSupervisorOrigen(found?.idUsuarioSupervisor ?? '')
+    setIdSupervisorDestino('')
+    setModoCambioSupervisor('todos')
+    setGruposSeleccionadosCambio([])
+    setOpenCambioSupervisorModal(true)
   }
 
   return (
@@ -380,30 +392,19 @@ const CentralGruposPage = () => {
         </div>
       ) : null}
 
+      {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
+      {feedback ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{feedback}</div> : null}
+
       <FormCard
-        title="Acciones"
-        description="Usa los botones para abrir cada flujo en modal."
-        actions={
-          <Button type="button" variant="secondary" onClick={() => queryClient.invalidateQueries({ queryKey: ['central-grupos'] })}>
-            Recargar
-          </Button>
-        }
+        title="Acciones de grupos"
+        description="Gestiona grupos existentes y sus responsables."
       >
         <div className="flex flex-wrap gap-3">
-          <Button type="button" onClick={() => setOpenCrearModal(true)} disabled={!isCentral}>
-            Crear grupo
-          </Button>
-          <Button type="button" onClick={() => setOpenSupervisorModal(true)} disabled={!isCentral}>
-            Asignar supervisor
-          </Button>
-          <Button type="button" onClick={() => setOpenTecnicoModal(true)} disabled={!isCentral}>
-            Asignar tecnico
+          <Button type="button" onClick={() => setOpenSupervisorModal(true)} disabled={!isCentral || grupos.length === 0}>
+            Asignar grupo existente a supervisor
           </Button>
         </div>
       </FormCard>
-
-      {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">{error}</div> : null}
-      {feedback ? <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{feedback}</div> : null}
 
       <FormCard title="Lista de grupos y tecnicos" description={`Grupos: ${grupos.length} | Tecnicos asignados: ${totalTecnicosAsignados}`}>
         {gruposQuery.isLoading ? <p className="text-sm text-slate-500">Cargando grupos...</p> : null}
@@ -413,20 +414,57 @@ const CentralGruposPage = () => {
         ) : null}
 
         {!gruposQuery.isLoading && grupos.length > 0 ? (
-          <div className="grid gap-5 lg:grid-cols-2">
-            {grupos.map((grupo) => (
-              <article key={grupo.idGrupo} className="rounded-[2rem] border border-slate-200 bg-white p-6 text-slate-900 shadow-soft">
-                <div className="space-y-5">
+          <div className="grid gap-5">
+            {gruposPorSupervisor.map((bloque) => (
+              <section
+                key={`sup-${bloque.supervisor}`}
+                className="overflow-hidden rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-blue-50 shadow-sm transition hover:shadow-md"
+              >
+                <div className="flex w-full items-center justify-between gap-3 px-5 py-4">
+                  <button
+                    type="button"
+                    className="flex-1 text-left"
+                    onClick={() => toggleSupervisorExpandido(bloque.supervisor)}
+                  >
                   <div>
-                    <h4 className="text-3xl font-extrabold tracking-wide text-slate-900">{grupo.nombre.toUpperCase()}</h4>
-                    <p className="mt-1 text-xs uppercase tracking-[0.18em] text-slate-500">Grupo #{grupo.idGrupo}</p>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Supervisor</p>
+                    <h3 className="text-2xl font-extrabold text-slate-900">{bloque.supervisor}</h3>
+                    <p className="mt-1 text-sm text-slate-600">Grupos asignados: {bloque.grupos.length}</p>
                   </div>
-
-                  <div>
-                    <p className="text-2xl font-semibold uppercase text-slate-900">{(grupo.supervisor ?? 'Sin supervisor asignado').toUpperCase()}</p>
-                    <p className="mt-1 text-sm text-slate-500">Supervisor</p>
+                  </button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      className="!rounded-full !border-blue-200 !bg-white !px-4 !py-2 !text-xs !font-bold !text-blue-700 hover:!bg-blue-50"
+                      onClick={() => abrirEditarSupervisor(bloque.supervisor)}
+                    >
+                      editar
+                    </Button>
+                    <button
+                      type="button"
+                      className="rounded-full bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-700"
+                      onClick={() => toggleSupervisorExpandido(bloque.supervisor)}
+                    >
+                      {supervisoresExpandido.includes(bloque.supervisor.trim().toLowerCase()) ? 'Ocultar grupos' : 'Ver grupos'}
+                    </button>
+                  </div>
+                </div>
+                {supervisoresExpandido.includes(bloque.supervisor.trim().toLowerCase()) ? (
+                <div className="grid gap-4 border-t border-slate-200 bg-white px-5 py-5 lg:grid-cols-2">
+                  {bloque.grupos.map((grupo) => (
+                    <article key={grupo.idGrupo} className="rounded-2xl border border-slate-200 bg-slate-50 p-5 text-slate-900">
+                <div className="space-y-5">
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-blue-600">Grupo</p>
+                        <h4 className="text-lg font-bold text-slate-900">{grupo.nombre}</h4>
+                      </div>
+                      <span className="rounded-full bg-blue-600 px-3 py-1 text-xs font-bold text-white">#{grupo.idGrupo}</span>
+                    </div>
                     {grupo.supervisorAusente ? (
-                      <p className="mt-2 text-sm font-semibold text-amber-700">
+                      <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-700">
                         Supervisor ausente. Colaborador temporal: {grupo.tecnicoTemporalBackup ?? 'sin definir'}
                       </p>
                     ) : null}
@@ -436,21 +474,10 @@ const CentralGruposPage = () => {
                     {grupo.tecnicos.length === 0 ? (
                       <p className="text-sm text-slate-500">- Sin integrantes</p>
                     ) : (
-                      <ul className="space-y-2">
+                      <ul className="grid gap-2">
                         {grupo.tecnicos.map((tecnico) => (
-                          <li key={`${grupo.idGrupo}-${tecnico.idUsuarioTecnico}`} className="flex items-center justify-between gap-3 text-xl text-slate-800">
-                            <span>- {tecnico.tecnico}</span>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="!rounded-xl !border !border-rose-200 !px-3 !py-1.5 !text-xs !font-semibold !text-rose-700 hover:!border-rose-300"
-                              onClick={() => handleQuitarTecnico(grupo.idGrupo, tecnico.idUsuarioTecnico, tecnico.tecnico)}
-                              disabled={quitarTecnicoMutation.isPending}
-                            >
-                              {quitandoTecnicoKey === `${grupo.idGrupo}-${tecnico.idUsuarioTecnico}` && quitarTecnicoMutation.isPending
-                                ? 'Quitando...'
-                                : 'Quitar'}
-                            </Button>
+                          <li key={`${grupo.idGrupo}-${tecnico.idUsuarioTecnico}`} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700">
+                            {tecnico.tecnico}
                           </li>
                         ))}
                       </ul>
@@ -458,11 +485,6 @@ const CentralGruposPage = () => {
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 pt-2 sm:grid-cols-2">
-                    {!grupo.supervisorAusente ? (
-                      <Button type="button" variant="primary" className="w-full sm:col-span-2" onClick={() => abrirEditarGrupo(grupo.idGrupo)}>
-                        editar
-                      </Button>
-                    ) : null}
                     {grupo.supervisorAusente ? (
                       <Button
                         type="button"
@@ -485,18 +507,13 @@ const CentralGruposPage = () => {
                         cambiar colaborador
                       </Button>
                     ) : null}
-                    <Button
-                      type="button"
-                      variant="secondary"
-                      className="w-full sm:col-span-2"
-                      onClick={() => handleEliminarGrupo(grupo.idGrupo, grupo.nombre)}
-                      disabled={eliminarGrupoMutation.isPending}
-                    >
-                      {idGrupoEliminando === grupo.idGrupo && eliminarGrupoMutation.isPending ? 'Eliminando...' : 'eliminar grupo'}
-                    </Button>
                   </div>
                 </div>
-              </article>
+                    </article>
+                  ))}
+                </div>
+                ) : null}
+              </section>
             ))}
           </div>
         ) : null}
@@ -570,46 +587,92 @@ const CentralGruposPage = () => {
       </Modal>
 
       <Modal
-        open={openEditarModal}
-        onClose={() => setOpenEditarModal(false)}
-        title={`Editar grupo ${grupoEditando?.nombre ?? ''}`.trim()}
-        maxWidthClass="max-w-xl"
+        open={openCambioSupervisorModal}
+        onClose={() => {
+          setOpenCambioSupervisorModal(false)
+          setSupervisorEdicionNombre('')
+        }}
+        title={`Supervisor ausente: ${supervisorEdicionNombre || 'Cambiar supervisor'}`}
+        maxWidthClass="max-w-3xl"
+        actions={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setOpenCambioSupervisorModal(false)}>
+              Cancelar
+            </Button>
+            <Button type="button" onClick={() => cambiarSupervisorMasivoMutation.mutate()} disabled={cambiarSupervisorMasivoMutation.isPending || !isCentral}>
+              {cambiarSupervisorMasivoMutation.isPending ? 'Cambiando...' : 'Aplicar cambio'}
+            </Button>
+          </>
+        }
       >
-        <div className="grid gap-3">
-          <Button
-            type="button"
-            variant="primary"
-            onClick={() => {
-              if (!idGrupoEditando) return
-              setOpenEditarModal(false)
-              abrirAsignarTecnicoGrupo(idGrupoEditando)
-            }}
-          >
-            agregar tecnico
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => {
-              if (!idGrupoEditando) return
-              setOpenEditarModal(false)
-              abrirCambiarSupervisorGrupo(idGrupoEditando)
-            }}
-          >
-            cambiar supervisor
-          </Button>
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={() => {
-              if (!idGrupoEditando) return
-              setOpenEditarModal(false)
-              handleAbrirSupervisorAusente(idGrupoEditando)
-            }}
-            disabled={(grupoEditando?.tecnicos.length ?? 0) === 0}
-          >
-            supervisor ausente
-          </Button>
+        <div className="grid gap-4 md:grid-cols-2">
+          <Field label="Supervisor origen (ausente)">
+            <select
+              className="input-base"
+              value={idSupervisorOrigen}
+              onChange={(event) => {
+                setIdSupervisorOrigen(event.target.value)
+                setGruposSeleccionadosCambio([])
+              }}
+              disabled={Boolean(supervisorEdicionNombre)}
+            >
+              <option value="">Selecciona supervisor origen</option>
+              {supervisores.map((sup) => (
+                <option key={`origen-${sup.idUsuarioSupervisor}`} value={sup.idUsuarioSupervisor}>
+                  {sup.supervisorACargo} ({sup.idUsuarioSupervisor})
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Supervisor destino">
+            <select className="input-base" value={idSupervisorDestino} onChange={(event) => setIdSupervisorDestino(event.target.value)}>
+              <option value="">Selecciona supervisor destino</option>
+              {supervisores
+                .filter((sup) => sup.idUsuarioSupervisor !== idSupervisorOrigen)
+                .map((sup) => (
+                  <option key={`destino-${sup.idUsuarioSupervisor}`} value={sup.idUsuarioSupervisor}>
+                    {sup.supervisorACargo} ({sup.idUsuarioSupervisor})
+                  </option>
+                ))}
+            </select>
+          </Field>
+        </div>
+
+        <div className="mt-3 grid gap-3">
+          <Field label="Modo de transferencia">
+            <select
+              className="input-base"
+              value={modoCambioSupervisor}
+              onChange={(event) => setModoCambioSupervisor(event.target.value as 'todos' | 'especificos')}
+            >
+              <option value="todos">Todos los grupos del supervisor origen</option>
+              <option value="especificos">Solo grupos especificos</option>
+            </select>
+          </Field>
+
+          {modoCambioSupervisor === 'especificos' ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="mb-2 text-sm font-semibold text-slate-700">Selecciona grupos del supervisor origen</p>
+              {gruposSupervisorOrigen.length === 0 ? (
+                <p className="text-sm text-slate-500">Sin grupos disponibles.</p>
+              ) : (
+                <div className="grid gap-2">
+                  {gruposSupervisorOrigen.map((grupo) => (
+                    <label key={`chk-${grupo.idGrupo}`} className="flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={gruposSeleccionadosCambio.includes(grupo.idGrupo)}
+                        onChange={() => toggleGrupoCambio(grupo.idGrupo)}
+                      />
+                      <span>
+                        {grupo.nombre} ({grupo.idGrupo})
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       </Modal>
 

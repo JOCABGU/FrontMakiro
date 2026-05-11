@@ -28,6 +28,7 @@ type LlamadaAtencionForm = {
   descripcion: string
   comentarioColaborador: string
   acuerdos: string
+  testigo: string
   fechaSeguimiento: string
   firmaTecnico: string
   firmaTestigo: string
@@ -52,6 +53,7 @@ const createEmptyForm = (): LlamadaAtencionForm => ({
   descripcion: '',
   comentarioColaborador: '',
   acuerdos: '',
+  testigo: '',
   fechaSeguimiento: '',
   firmaTecnico: '',
   firmaTestigo: '',
@@ -306,10 +308,6 @@ const LlamadaAtencionPage = () => {
 
   const handleConfirmFirmaStep = () => {
     if (firmaStep === 'testigo') {
-      if (!firmaTestigoDraft.trim()) {
-        setFirmaModalError('La firma del testigo es requerida.')
-        return
-      }
       setFirmaModalError(null)
       setFirmaStep('tecnico')
       return
@@ -346,7 +344,6 @@ const LlamadaAtencionPage = () => {
       return 'Fecha de seguimiento invalida.'
     }
     if (!form.firmaTecnico.trim()) return 'Firma del tecnico es requerida.'
-    if (!form.firmaTestigo.trim()) return 'Firma del testigo es requerida.'
     return null
   }
 
@@ -366,6 +363,7 @@ const LlamadaAtencionPage = () => {
       descripcion: toOptionalText(form.descripcion),
       comentarioColaborador: toOptionalText(form.comentarioColaborador),
       acuerdos: toOptionalText(form.acuerdos),
+      testigo: form.testigo.trim(),
       fechaSeguimiento: toOptionalText(form.fechaSeguimiento),
       firmaTecnico: toOptionalText(form.firmaTecnico),
       firmaTestigo: toOptionalText(form.firmaTestigo),
@@ -821,7 +819,17 @@ const LlamadaAtencionPage = () => {
           </p>
 
           {firmaStep === 'testigo' ? (
-            <SignaturePad value={firmaTestigoDraft} onChange={setFirmaTestigoDraft} />
+            <>
+              <Field label="Nombre completo del testigo">
+                <input
+                  className="input-base"
+                  value={form.testigo}
+                  onChange={(event) => handleFormChange('testigo', event.target.value)}
+                  placeholder="Escribe nombre y apellido del testigo"
+                />
+              </Field>
+              <SignaturePad value={firmaTestigoDraft} onChange={setFirmaTestigoDraft} />
+            </>
           ) : (
             <SignaturePad value={firmaTecnicoDraft} onChange={setFirmaTecnicoDraft} />
           )}
@@ -944,6 +952,10 @@ const LlamadaAtencionPage = () => {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
               <p className="text-xs font-semibold uppercase text-slate-500">Acuerdos</p>
               <p className="text-sm text-slate-900">{detalleRegistro.acuerdos || '-'}</p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+              <p className="text-xs font-semibold uppercase text-slate-500">Testigo</p>
+              <p className="text-sm text-slate-900">{detalleRegistro.testigo || '-'}</p>
             </div>
 
             <div className="grid gap-3 md:grid-cols-2">
