@@ -24,6 +24,7 @@ import CentralGruposPage from '../pages/CentralGruposPage'
 import PrivilegiosPage from '../pages/admin/PrivilegiosPage'
 import ForbiddenPage from '../pages/ForbiddenPage'
 import TecnicoInicioJornadaPage from '../pages/TecnicoInicioJornadaPage'
+import NpsDashboardPage from '../pages/NpsDashboardPage'
 
 const LegacyOtDetailRedirect = () => {
   const { id } = useParams()
@@ -72,6 +73,7 @@ const AppRoutes = () => {
           <Route path="/supervisor/llamada-atencion" element={<LlamadaAtencionPage />} />
           <Route path="/supervisor/supervision" element={<SupervisorSupervisionPage />} />
           <Route path="/central/grupos" element={<CentralGruposPage />} />
+          <Route path="/nps" element={<NpsDashboardPage />} />
             <Route element={<AdminRoute />}>
               <Route path="/admin/privilegios" element={<PrivilegiosPage />} />
             </Route>

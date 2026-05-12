@@ -127,6 +127,13 @@ export const navigationItems: NavigationItem[] = [
     sidebarLabelFromMenu: false,
   },
   {
+    label: 'NPS',
+    to: '/nps',
+    routePatterns: ['/nps'],
+    allowedRoles: ['tecnico', 'supervisor', 'central', 'sistemas', 'admin'],
+    showInSidebar: true,
+  },
+  {
     label: 'Central Grupos',
     to: '/central/grupos',
     routePatterns: ['/central/grupos'],
